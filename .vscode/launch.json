@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run server",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": ["app.main:app", "--reload", "--port", "8000"],
+            "cwd": "${workspaceFolder}/code-reviewer",
+            "envFile": "${workspaceFolder}/code-reviewer/.env",
+            "python": "${workspaceFolder}/code-reviewer/.venv/bin/python"
+        }
+    ]
+}
