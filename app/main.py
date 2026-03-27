@@ -1,12 +1,35 @@
 import hashlib
 import hmac
 import logging
+import logging.config
 
-from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks, Body
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
+import asyncio
+
+from app.github.comment_poster import post_review
+from app.github.context_fetcher import fetch_repo_context
 from app.github.pr_fetcher import fetch_review_context
 from app.models.webhook import WebhookPayload
+from app.orchestrator import run_review
+
+logging.config.dictConfig({
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {"format": "%(levelname)s  %(name)s — %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "default"},
+    },
+    "root": {"level": "INFO", "handlers": ["console"]},
+    "loggers": {
+        "app": {"level": "DEBUG", "handlers": ["console"], "propagate": False},
+        "uvicorn.access": {"propagate": True},
+    },
+})
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +58,27 @@ async def _handle_pr(payload: WebhookPayload) -> None:
         payload.repository.full_name,
     )
     try:
-        ctx = await fetch_review_context(payload)
+        # Fetch PR diff and .mreview/ context in parallel — both are independent GitHub API calls
+        ctx, repo_context = await asyncio.gather(
+            fetch_review_context(payload),
+            fetch_repo_context(payload.repository.full_name),
+        )
+        ctx.repo_context = repo_context
+
         logger.info(
-            "PR #%d — fetched %d reviewable files (lang: %s)",
+            "PR #%d — fetched %d reviewable files (lang: %s), repo context: %s",
             ctx.pr_number,
             len(ctx.diff_files),
             ctx.primary_language,
+            repo_context.present_files() or "none",
         )
-        for f in ctx.diff_files:
-            logger.debug("  [%s] %s (+%d/-%d)", f.status, f.filename, f.additions, f.deletions)
-        # TODO: pass ctx to orchestrator once T7/T8 are done
+        # Store context so /review/inject can process manual Claude responses
+        _pending_contexts[ctx.pr_number] = ctx
+        comments = await run_review(ctx)
+        logger.info("PR #%d — %d comments generated", ctx.pr_number, len(comments))
+        for c in comments:
+            logger.info("  [%s] %s:%d — %s", c.severity, c.file, c.line, c.message)
+        await post_review(ctx, comments)
     except Exception:
         logger.exception(
             "Failed to process PR #%d on %s",
@@ -53,9 +87,57 @@ async def _handle_pr(payload: WebhookPayload) -> None:
         )
 
 
+# In-memory store of the last ReviewContext per PR (keyed by pr_number)
+# Used by /review/inject to avoid re-fetching the diff
+_pending_contexts: dict[int, object] = {}
+
+
+class InjectRequest(BaseModel):
+    pr_number: int
+    claude_response: str  # raw JSON array pasted from Claude chat
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/review/inject")
+async def inject_review(req: InjectRequest):
+    """
+    Manually inject a Claude response for a PR that was already fetched.
+
+    Workflow:
+      1. Fire /webhook — server fetches diff, writes prompt to prompts/pr_{n}.txt
+      2. Paste that prompt into Claude chat, copy the JSON response
+      3. POST here with pr_number + claude_response
+      4. Server parses comments and logs them (T8 will post them to GitHub)
+    """
+    from app.agents.guidelines import _parse_comments
+
+    ctx = _pending_contexts.get(req.pr_number)
+    if ctx is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No pending context for PR #{req.pr_number}. Fire /webhook first.",
+        )
+
+    try:
+        comments = _parse_comments(req.claude_response)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to parse Claude response: {e}")
+
+    logger.info("PR #%d — %d comments injected manually", req.pr_number, len(comments))
+    for c in comments:
+        logger.info("  [%s] %s:%d — %s", c.severity, c.file, c.line, c.message)
+
+    await post_review(ctx, comments)
+
+    return JSONResponse({
+        "pr": req.pr_number,
+        "comments_parsed": len(comments),
+        "comments": [c.model_dump() for c in comments],
+    })
 
 
 @app.post("/webhook")

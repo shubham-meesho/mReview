@@ -1,0 +1,1237 @@
+=== SYSTEM PROMPT ===
+You are a thorough, senior code reviewer. Review this pull request diff as carefully as a senior engineer would — check every changed file, every new method, every branch.
+
+Language: Java
+
+Rules to apply:
+CORRECTNESS & SAFETY
+- Checked exceptions must be caught or declared; never swallow exceptions silently
+- Use try-with-resources for anything that implements Closeable/AutoCloseable
+- Check all CompletableFuture results; unchecked failures and executor rejections are silent
+- String comparison must use .equals(), never ==
+- Avoid raw types (List, Map); always parameterise generics
+- Resource leaks: close streams, connections, and readers in finally or try-with-resources
+- Numeric operations on Long/Integer can be negative; guard percentage checks with Math.abs()
+- Throw specific exceptions, not raw RuntimeException — callers need to distinguish failure types
+
+NULL SAFETY
+- Prefer Optional<T> over returning null from methods
+- Every public method that can return null must document it with @Nullable
+- Guard all external inputs and injected config objects with null checks before dereferencing
+- Chained calls like a.getB().getC() need null guards at every step
+
+CONCURRENCY
+- Avoid Thread.sleep() in application code; use ScheduledExecutorService instead
+- Guard shared mutable state with synchronisation; document thread-safety assumptions
+- CompletableFuture.runAsync() without a bounded executor uses ForkJoinPool — always pass an executor
+- Async tasks that can be rejected by a full executor should be wrapped in try-catch at the call site
+
+DESIGN & MAINTAINABILITY
+- Methods with more than one responsibility should be split
+- Boolean flag parameters (doX=true) are a code smell; prefer strategy or polymorphism
+- Dead code branches (both if/else returning the same value) should be removed
+- Magic numbers should be named constants
+- Duplicate logic blocks (copy-paste) should be extracted to a shared method
+- New public methods on shared services should have Javadoc explaining intent and edge cases
+
+TESTING & OBSERVABILITY
+- New branching logic (if/else, feature flags) must have corresponding unit tests
+- New classes should have test coverage for both happy path and failure scenarios
+- New code paths should emit metrics or structured logs to make them observable in production
+- Log levels matter: use log.error only for actionable failures, log.warn for degraded states
+
+SPRING / FRAMEWORK PATTERNS
+- Use @Override on every method that overrides or implements an interface
+- Prefer constructor injection over field injection for testability
+- @Transactional boundaries must be on public methods only
+- Executor beans (ExecutorService) should be named and sized explicitly in config
+
+SERIALIZATION & DEPLOYMENT COMPATIBILITY
+- Any class that is cached (in-memory, Redis, Memcached) or sent over the wire must have @JsonIgnoreProperties(ignoreUnknown = true); without it, adding a new field will cause deserialization failures on older pods during a rolling deployment
+- New fields added to cached or serialized objects must be nullable or have a default value so older serialized payloads (missing the field) can still be deserialized
+- Removing or renaming a field from a cached/serialized object is a breaking change; the old name must be kept (or @JsonAlias used) until all pods and caches are drained
+- Enum values added to a serialized enum must not break existing persisted values; deserializing an unknown enum value without READ_UNKNOWN_ENUM_VALUES_AS_NULL or a default will throw
+
+HOW TO REVIEW
+- Read the PR description to understand the intent, then check if the implementation matches
+- For every new method or class: check correctness, null safety, error handling, and test coverage
+- For every new branch (if/else/switch): check all paths are handled, edge cases are covered
+- For every new async/concurrent operation: check executor bounds, rejection handling, thread safety
+- Flag issues even if you are moderately confident — the confidence score lets us filter later
+- Do NOT skip files because they look simple; simple files often hide subtle bugs
+
+Each line in the diff is prefixed with its new-file line number: `L0010:` for context/added lines, `L----:` for deleted lines. Use exactly that number as the `line` field.
+
+Some files also include a `[METHOD CONTEXT lines N-M]` block — use it to understand the full method signature and logic flow, but always use the L{number}: line numbers from the diff (not line numbers from the method context block) when setting the `line` field.
+
+For each issue found, output a JSON object:
+{
+  "file": "<relative file path>",
+  "line": <line number from L{number}: prefix, integer>,
+  "severity": "<BLOCKER|WARNING|SUGGESTION|NITPICK>",
+  "category": "<naming|error-handling|concurrency|null-safety|resource-leak|logic|security|test-coverage|style|other>",
+  "message": "<one sentence, actionable, specific to this code>",
+  "rationale": "<why this matters, 1-2 sentences>",
+  "confidence": <float 0.0-1.0>
+}
+
+Return ONLY a valid JSON array. No prose, no markdown, no code fences.
+Include all issues with confidence >= 0.65. Be thorough — it is better to flag something debatable than to silently miss a real bug.
+
+
+=== USER MESSAGE ===
+PR #1008: Test PR
+
+### client/pom.xml (modified, +2/-2)
+@@ -6,12 +6,12 @@
+L0006:      <parent>
+L0007:          <groupId>com.meesho</groupId>
+L0008:          <artifactId>product-amplifyr</artifactId>
+L----: -        <version>1.15.28</version>
+L0009: +        <version>1.15.29</version>
+L0010:      </parent>
+L0011:  
+L0012:      <groupId>com.meesho.product-amplifyr</groupId>
+L0013:      <artifactId>client</artifactId>
+L----: -    <version>1.15.28</version>
+L0014: +    <version>1.15.29</version>
+L0015:      <dependencies>
+L0016:          <dependency>
+L0017:              <groupId>org.projectlombok</groupId>
+
+### client/src/main/java/com/meesho/productamplifyr/client/models/AffiliatePriceComponent.java (modified, +4/-0)
+@@ -12,4 +12,8 @@
+L0012:  public class AffiliatePriceComponent {
+L0013:  
+L0014:      private Double affiliateCommissionPercentage;
+L0015: +
+L0016: +    private boolean reelzOffer;
+L0017: +
+L0018: +    private String reelzOfferText;
+L0019:  }
+
+[METHOD CONTEXT lines 10-23]
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class AffiliatePriceComponent {
+
+    private Double affiliateCommissionPercentage;
+
+    private Boolean reelzOffer;
+
+    private String reelzOfferText;
+}
+[END METHOD CONTEXT]
+
+### pom.xml (modified, +1/-1)
+@@ -12,7 +12,7 @@
+L0012:  
+L0013:      <groupId>com.meesho</groupId>
+L0014:      <artifactId>product-amplifyr</artifactId>
+L----: -    <version>1.15.28</version>
+L0015: +    <version>1.15.29</version>
+L0016:      <packaging>pom</packaging>
+L0017:      <modules>
+L0018:          <module>client</module>
+
+### server/pom.xml (modified, +4/-4)
+@@ -6,12 +6,12 @@
+L0006:      <parent>
+L0007:          <groupId>com.meesho</groupId>
+L0008:          <artifactId>product-amplifyr</artifactId>
+L----: -        <version>1.15.28</version>
+L0009: +        <version>1.15.29</version>
+L0010:      </parent>
+L0011:  
+L0012:      <groupId>com.meesho.product-amplifyr</groupId>
+L0013:      <artifactId>server</artifactId>
+L----: -    <version>1.15.28</version>
+L0014: +    <version>1.15.29</version>
+L0015:      <properties>
+L0016:          <spring-cloud.version>2021.0.3</spring-cloud.version>
+L0017:      </properties>
+@@ -39,12 +39,12 @@
+L0039:          <dependency>
+L0040:              <groupId>com.meesho.product-amplifyr</groupId>
+L0041:              <artifactId>client</artifactId>
+L----: -            <version>1.15.28</version>
+L0042: +            <version>1.15.29</version>
+L0043:          </dependency>
+L0044:          <dependency>
+L0045:              <groupId>com.meesho.product-amplifyr</groupId>
+L0046:              <artifactId>wrapper</artifactId>
+L----: -            <version>1.15.28</version>
+L0047: +            <version>1.15.29</version>
+L0048:              <exclusions>
+L0049:                  <exclusion>
+L0050:                      <groupId>com.meesho.feed</groupId>
+
+### server/src/main/java/com/meesho/productamplifyr/server/domainModels/dependencyData/AffiliateAttributesDependencyData.java (modified, +10/-2)
+@@ -9,11 +9,19 @@
+L0009:  @Data
+L0010:  @Builder
+L0011:  public class AffiliateAttributesDependencyData {
+L----: -    private Map<Integer, SupplierCommissionData> productIdToSupplierCommissionDataMap;
+L0012: +    private Map<Integer, SupplierAffiliateData> productIdToSupplierAffiliateDataMap;
+L0013:  
+L0014:      @Builder
+L0015:      @Getter
+L----: -    public static class SupplierCommissionData {
+L0016: +    public static class SupplierAffiliateData {
+L0017:          private Map<Integer, Double> commissionPercentages;
+L0018: +        private Map<Integer, AffiliateInfo> affiliateInfoMap;
+L0019: +    }
+L0020: +
+L0021: +    @Builder
+L0022: +    @Getter
+L0023: +    public static class AffiliateInfo {
+L0024: +        private boolean reelzOffer;
+L0025: +        private String reelzOfferText;
+L0026:      }
+L0027:  }
+
+[METHOD CONTEXT lines 9-27]
+@Data
+@Builder
+public class AffiliateAttributesDependencyData {
+    private Map<Integer, SupplierAffiliateData> productIdToSupplierAffiliateDataMap;
+
+    @Builder
+    @Getter
+    public static class SupplierAffiliateData {
+        private Map<Integer, Double> commissionPercentages;
+        private Map<Integer, AffiliateInfo> affiliateInfoMap;
+    }
+
+    @Builder
+    @Getter
+    public static class AffiliateInfo {
+        private boolean reelzOffer;
+        private String reelzOfferText;
+    }
+}
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 14-19]
+    @Builder
+    @Getter
+    public static class SupplierAffiliateData {
+        private Map<Integer, Double> commissionPercentages;
+        private Map<Integer, AffiliateInfo> affiliateInfoMap;
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 21-26]
+    @Builder
+    @Getter
+    public static class AffiliateInfo {
+        private boolean reelzOffer;
+        private String reelzOfferText;
+    }
+[END METHOD CONTEXT]
+
+### server/src/main/java/com/meesho/productamplifyr/server/downstream/response/affiliate/AffiliateAttributesResponse.java (modified, +3/-0)
+@@ -20,4 +20,7 @@ public class AffiliateAttributesResponse {
+L0020:  
+L0021:      @JsonProperty("catalog_suppliers_commission_percentages")
+L0022:      private Map<Integer, Map<Integer, Double>> catalogSuppliersCommissionPercentages;
+L0023: +
+L0024: +    @JsonProperty("catalog_suppliers_affiliate_info")
+L0025: +    private Map<Integer, Map<Integer, AffiliateInfo>> catalogSuppliersAffiliateInfo;
+L0026:  }
+
+[METHOD CONTEXT lines 13-26]
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+@Builder
+@JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class AffiliateAttributesResponse {
+
+    @JsonProperty("catalog_suppliers_commission_percentages")
+    private Map<Integer, Map<Integer, Double>> catalogSuppliersCommissionPercentages;
+
+    @JsonProperty("catalog_suppliers_affiliate_info")
+    private Map<Integer, Map<Integer, AffiliateInfo>> catalogSuppliersAffiliateInfo;
+}
+[END METHOD CONTEXT]
+
+### server/src/main/java/com/meesho/productamplifyr/server/downstream/response/affiliate/AffiliateInfo.java (added, +24/-0)
+@@ -0,0 +1,24 @@
+L0001: +package com.meesho.productamplifyr.server.downstream.response.affiliate;
+L0002: +
+L0003: +import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+L0004: +import com.fasterxml.jackson.annotation.JsonInclude;
+L0005: +import com.fasterxml.jackson.annotation.JsonProperty;
+L0006: +import lombok.AllArgsConstructor;
+L0007: +import lombok.Builder;
+L0008: +import lombok.Data;
+L0009: +import lombok.NoArgsConstructor;
+L0010: +
+L0011: +@Data
+L0012: +@AllArgsConstructor
+L0013: +@NoArgsConstructor
+L0014: +@Builder
+L0015: +@JsonIgnoreProperties(ignoreUnknown = true)
+L0016: +@JsonInclude(JsonInclude.Include.NON_NULL)
+L0017: +public class AffiliateInfo {
+L0018: +
+L0019: +    @JsonProperty("is_reelz_offer")
+L0020: +    private boolean reelzOffer;
+L0021: +
+L0022: +    @JsonProperty("reelz_offer_text")
+L0023: +    private String reelzOfferText;
+L0024: +}
+
+[METHOD CONTEXT lines 11-24]
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+@Builder
+@JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class AffiliateInfo {
+
+    @JsonProperty("is_reelz_offer")
+    private boolean reelzOffer;
+
+    @JsonProperty("reelz_offer_text")
+    private String reelzOfferText;
+}
+[END METHOD CONTEXT]
+
+### server/src/main/java/com/meesho/productamplifyr/server/downstream/service/affiliate/AffiliateAdapter.java (modified, +50/-27)
+@@ -7,15 +7,16 @@
+L0007:  import com.meesho.productamplifyr.server.downstream.request.ServiceRequest;
+L0008:  import com.meesho.productamplifyr.server.downstream.request.affiliate.AffiliateAttributesRequest;
+L0009:  import com.meesho.productamplifyr.server.downstream.response.affiliate.AffiliateAttributesResponse;
+L0010: +import com.meesho.productamplifyr.server.downstream.response.affiliate.AffiliateInfo;
+L0011:  import com.meesho.productamplifyr.server.downstream.service.HeadersUtils;
+L0012: +import com.meesho.productamplifyr.server.utils.CommonConstants;
+L0013:  import com.meesho.productamplifyr.server.utils.NullUtils;
+L0014:  import lombok.extern.slf4j.Slf4j;
+L0015:  import org.apache.commons.lang3.ObjectUtils;
+L----: -import org.apache.commons.lang3.tuple.Pair;
+L0016:  
+L0017: +import java.util.HashMap;
+L0018:  import java.util.Map;
+L0019:  import java.util.Objects;
+L----: -import java.util.Optional;
+L0020:  import java.util.Set;
+L0021:  import java.util.stream.Collectors;
+L0022:  
+@@ -30,6 +31,7 @@ public static ServiceRequest<AffiliateAttributesRequest> getAffiliateAttributesR
+L0031:          }
+L0032:  
+L0033:          Map<String, String> headers = HeadersUtils.getDefaultHeaders(requestDetail.getContextData().getUser());
+L0034: +        headers.putIfAbsent(CommonConstants.HeaderKeys.REQUEST_CONTEXT, requestDetail.getContextData().getContext());
+L0035:          Map<Integer, Set<Integer>> catalogIdToSuppliers = getCatalogIdToSuppliersMap(requestDetail);
+L0036:          if (ObjectUtils.isEmpty(catalogIdToSuppliers)) {
+L0037:              return null;
+@@ -52,40 +54,61 @@ public static AffiliateAttributesDependencyData getAffiliateAttributesDependency
+L0054:          }
+L0055:  
+L0056:          return AffiliateAttributesDependencyData.builder()
+L----: -                .productIdToSupplierCommissionDataMap(
+L0057: +                .productIdToSupplierAffiliateDataMap(
+L0058:                          requestDetail.getProductMetaInfoMap().values().stream()
+L0059:                                  .collect(Collectors.toMap(
+L0060:                                          ProductMetaInfo::getProductId,
+L----: -                                        productMetaInfo -> {
+L----: -                                            Map<Integer, Double> commissionPercentages = productMetaInfo.getSupplierMetaInfoList().stream()
+L----: -                                                    .map(supplierMetaInfo -> {
+L----: -                                                        Integer supplierId = supplierMetaInfo.getSupplierId();
+L----: -                                                        Double commission = NullUtils.getOrDefault(
+L----: -                                                                affiliateAttributesResponse,
+L----: -                                                                response -> response.getCatalogSuppliersCommissionPercentages()
+L----: -                                                                        .get(productMetaInfo.getCatalogId())
+L----: -                                                                        .get(supplierId),
+L----: -                                                                null
+L----: -                                                        );
+L----: -                                                        return Optional.ofNullable(commission)
+L----: -                                                                .map(c -> Pair.of(supplierId, c))
+L----: -                                                                .orElse(null);
+L----: -                                                    })
+L----: -                                                    .filter(Objects::nonNull)
+L----: -                                                    .collect(Collectors.toMap(
+L----: -                                                            Pair::getKey,
+L----: -                                                            Pair::getValue
+L----: -                                                    ));
+L----: -                                            return AffiliateAttributesDependencyData.SupplierCommissionData.builder()
+L----: -                                                    .commissionPercentages(commissionPercentages)
+L----: -                                                    .build();
+L----: -                                        },
+L0061: +                                        productMetaInfo -> buildSupplierAffiliateData(productMetaInfo, affiliateAttributesResponse),
+L0062:                                          (existing, replacement) -> replacement
+L0063:                                  ))
+L0064:                  )
+L0065:                  .build();
+L0066:      }
+L0067:  
+L0068: +    private static AffiliateAttributesDependencyData.SupplierAffiliateData buildSupplierAffiliateData(
+L0069: +            ProductMetaInfo productMetaInfo,
+L0070: +            AffiliateAttributesResponse response
+L0071: +    ) {
+L0072: +        Integer catalogId = productMetaInfo.getCatalogId();
+L0073: +
+L0074: +        // Fetch catalog-level maps once, outside the per-supplier loop
+L0075: +        Map<Integer, Double> catalogCommissions = NullUtils.getNested(
+L0076: +                response, r -> r.getCatalogSuppliersCommissionPercentages().get(catalogId));
+L0077: +        Map<Integer, AffiliateInfo> catalogAffiliateInfos = NullUtils.getNested(
+L0078: +                response, r -> r.getCatalogSuppliersAffiliateInfo().get(catalogId));
+L0079: +
+L0080: +        Map<Integer, Double> commissionPercentages = new HashMap<>();
+L0081: +        Map<Integer, AffiliateAttributesDependencyData.AffiliateInfo> affiliateInfoMap = new HashMap<>();
+L0082: +
+L0083: +        // Single pass over suppliers — populates both maps at once
+L0084: +        for (SupplierMetaInfo supplierMetaInfo : productMetaInfo.getSupplierMetaInfoList()) {
+L0085: +            Integer supplierId = supplierMetaInfo.getSupplierId();
+L0086: +
+L0087: +            if (catalogCommissions != null) {
+L0088: +                Double commission = catalogCommissions.get(supplierId);
+L0089: +                if (commission != null) {
+L0090: +                    commissionPercentages.put(supplierId, commission);
+L0091: +                }
+L0092: +            }
+L0093: +
+L0094: +            if (catalogAffiliateInfos != null) {
+L0095: +                AffiliateInfo affiliateInfo = catalogAffiliateInfos.get(supplierId);
+L0096: +                if (affiliateInfo != null) {
+L0097: +                        affiliateInfoMap.put(supplierId,
+L0098: +                            AffiliateAttributesDependencyData.AffiliateInfo.builder()
+L0099: +                                    .reelzOffer(affiliateInfo.isReelzOffer())
+L0100: +                                    .reelzOfferText(affiliateInfo.getReelzOfferText())
+L0101: +                                    .build());
+L0102: +                }
+L0103: +            }
+L0104: +        }
+L0105: +
+L0106: +        return AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+L0107: +                .commissionPercentages(commissionPercentages)
+L0108: +                .affiliateInfoMap(affiliateInfoMap)
+L0109: +                .build();
+L0110: +    }
+L0111: +
+L0112:      private static Map<Integer, Set<Integer>> getCatalogIdToSuppliersMap(
+L0113:              RequestDetail requestDetail
+L0114:      ) {
+
+[METHOD CONTEXT lines 26-46]
+    public static ServiceRequest<AffiliateAttributesRequest> getAffiliateAttributesRequest(
+            RequestDetail requestDetail
+    ) {
+        if (!requestDetail.getDownStreamFlagsInfoRequestLevel().getAffiliateAttributesCallRequestMeta().isRequested()) {
+            return null;
+        }
+
+        Map<String, String> headers = HeadersUtils.getDefaultHeaders(requestDetail.getContextData().getUser());
+        headers.putIfAbsent(CommonConstants.HeaderKeys.REQUEST_CONTEXT, requestDetail.getContextData().getContext());
+        Map<Integer, Set<Integer>> catalogIdToSuppliers = getCatalogIdToSuppliersMap(requestDetail);
+        if (ObjectUtils.isEmpty(catalogIdToSuppliers)) {
+            return null;
+        }
+
+        return ServiceRequest.of(
+                AffiliateAttributesRequest.builder()
+                        .catalogIdToSuppliers(catalogIdToSuppliers)
+                        .build(),
+                headers
+        );
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 48-66]
+    public static AffiliateAttributesDependencyData getAffiliateAttributesDependencyData(
+            RequestDetail requestDetail,
+            AffiliateAttributesResponse affiliateAttributesResponse
+    ) {
+        if (Objects.isNull(affiliateAttributesResponse)) {
+            return null;
+        }
+
+        return AffiliateAttributesDependencyData.builder()
+                .productIdToSupplierAffiliateDataMap(
+                        requestDetail.getProductMetaInfoMap().values().stream()
+                                .collect(Collectors.toMap(
+                                        ProductMetaInfo::getProductId,
+                                        productMetaInfo -> buildSupplierAffiliateData(productMetaInfo, affiliateAttributesResponse),
+                                        (existing, replacement) -> replacement
+                                ))
+                )
+                .build();
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 23-133]
+@Slf4j
+public class AffiliateAdapter {
+
+    public static ServiceRequest<AffiliateAttributesRequest> getAffiliateAttributesRequest(
+            RequestDetail requestDetail
+    ) {
+        if (!requestDetail.getDownStreamFlagsInfoRequestLevel().getAffiliateAttributesCallRequestMeta().isRequested()) {
+            return null;
+        }
+
+        Map<String, String> headers = HeadersUtils.getDefaultHeaders(requestDetail.getContextData().getUser());
+        headers.putIfAbsent(CommonConstants.HeaderKeys.REQUEST_CONTEXT, requestDetail.getContextData().getContext());
+        Map<Integer, Set<Integer>> catalogIdToSuppliers = getCatalogIdToSuppliersMap(requestDetail);
+        if (ObjectUtils.isEmpty(catalogIdToSuppliers)) {
+            return null;
+        }
+
+        return ServiceRequest.of(
+                AffiliateAttributesRequest.builder()
+                        .catalogIdToSuppliers(catalogIdToSuppliers)
+                        .build(),
+                headers
+        );
+    }
+
+    public static AffiliateAttributesDependencyData getAffiliateAttributesDependencyData(
+            RequestDetail requestDetail,
+            AffiliateAttributesResponse affiliateAttributesResponse
+    ) {
+        if (Objects.isNull(affiliateAttributesResponse)) {
+            return null;
+        }
+
+        return AffiliateAttributesDependencyData.builder()
+                .productIdToSupplierAffiliateDataMap(
+                        requestDetail.getProductMetaInfoMap().values().stream()
+                                .collect(Collectors.toMap(
+                                        ProductMetaInfo::getProductId,
+                                        productMetaInfo -> buildSupplierAffiliateData(productMetaInfo, affiliateAttributesResponse),
+                                        (existing, replacement) -> replacement
+                                ))
+                )
+                .build();
+    }
+
+    private static AffiliateAttributesDependencyData.SupplierAffiliateData buildSupplierAffiliateData(
+            ProductMetaInfo productMetaInfo,
+            AffiliateAttributesResponse response
+    ) {
+        Integer catalogId = productMetaInfo.getCatalogId();
+
+        // Fetch catalog-level maps once, outside the per-supplier loop
+        Map<Integer, Double> catalogCommissions = NullUtils.getNested(
+                response, r -> r.getCatalogSuppliersCommissionPercentages().get(catalogId));
+        Map<Integer, AffiliateInfo> catalogAffiliateInfos = NullUtils.getNested(
+                response, r -> r.getCatalogSuppliersAffiliateInfo().get(catalogId));
+
+        Map<Integer, Double> commissionPercentages = new HashMap<>();
+        Map<Integer, AffiliateAttributesDependencyData.AffiliateInfo> affiliateInfoMap = new HashMap<>();
+
+        // Single pass over suppliers — populates both maps at once
+        for (SupplierMetaInfo supplierMetaInfo : productMetaInfo.getSupplierMetaInfoList()) {
+            Integer supplierId = supplierMetaInfo.getSupplierId();
+
+            if (catalogCommissions != null) {
+                Double commission = catalogCommissions.get(supplierId);
+                if (commission != null) {
+                    commissionPercentages.put(supplierId, commission);
+                }
+            }
+
+            if (catalogAffiliateInfos != null) {
+                AffiliateInfo affiliateInfo = catalogAffiliateInfos.get(supplierId);
+                if (affiliateInfo != null) {
+                        affiliateInfoMap.put(supplierId,
+                            AffiliateAttributesDependencyData.AffiliateInfo.builder()
+                                    .reelzOffer(affiliateInfo.isReelzOffer())
+                                    .reelzOfferText(affiliateInfo.getReelzOfferText())
+                                    .build());
+                }
+            }
+        }
+
+        return AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+                .commissionPercentages(commissionPercentages)
+                .affiliateInfoMap(affiliateInfoMap)
+                .build();
+    }
+
+    private static Map<Integer, Set<Integer>> getCatalogIdToSuppliersMap(
+            RequestDetail requestDetail
+    ) {
+        try {
+            return requestDetail.getProductMetaInfoMap().values().stream()
+                    .filter(productMetaInfo -> !productMetaInfo.getSupplierMetaInfoList().isEmpty())
+                    .collect(Collectors.toMap(
+                            ProductMetaInfo::getCatalogId,
+                            pmi -> pmi.getSupplierMetaInfoList().stream()
+                                    .map(SupplierMetaInfo::getSupplierId)
+                                    .collect(Collectors.toSet()),
+                            (set1, set2) -> {
+                                set1.addAll(set2);
+                                return set1;
+                            }
+                    ));
+        } catch (Exception e) {
+            log.error("Error while getting catalogIdToSuppliers map : ", e);
+            return null;
+        }
+    }
+}
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 68-110]
+    private static AffiliateAttributesDependencyData.SupplierAffiliateData buildSupplierAffiliateData(
+            ProductMetaInfo productMetaInfo,
+            AffiliateAttributesResponse response
+    ) {
+        Integer catalogId = productMetaInfo.getCatalogId();
+
+        // Fetch catalog-level maps once, outside the per-supplier loop
+        Map<Integer, Double> catalogCommissions = NullUtils.getNested(
+                response, r -> r.getCatalogSuppliersCommissionPercentages().get(catalogId));
+        Map<Integer, AffiliateInfo> catalogAffiliateInfos = NullUtils.getNested(
+                response, r -> r.getCatalogSuppliersAffiliateInfo().get(catalogId));
+
+        Map<Integer, Double> commissionPercentages = new HashMap<>();
+        Map<Integer, AffiliateAttributesDependencyData.AffiliateInfo> affiliateInfoMap = new HashMap<>();
+
+        // Single pass over suppliers — populates both maps at once
+        for (SupplierMetaInfo supplierMetaInfo : productMetaInfo.getSupplierMetaInfoList()) {
+            Integer supplierId = supplierMetaInfo.getSupplierId();
+
+            if (catalogCommissions != null) {
+                Double commission = catalogCommissions.get(supplierId);
+                if (commission != null) {
+                    commissionPercentages.put(supplierId, commission);
+                }
+            }
+
+            if (catalogAffiliateInfos != null) {
+                AffiliateInfo affiliateInfo = catalogAffiliateInfos.get(supplierId);
+                if (affiliateInfo != null) {
+                        affiliateInfoMap.put(supplierId,
+                            AffiliateAttributesDependencyData.AffiliateInfo.builder()
+                                    .reelzOffer(affiliateInfo.isReelzOffer())
+                                    .reelzOfferText(affiliateInfo.getReelzOfferText())
+                                    .build());
+                }
+            }
+        }
+
+        return AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+                .commissionPercentages(commissionPercentages)
+                .affiliateInfoMap(affiliateInfoMap)
+                .build();
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 83-104]
+        // Single pass over suppliers — populates both maps at once
+        for (SupplierMetaInfo supplierMetaInfo : productMetaInfo.getSupplierMetaInfoList()) {
+            Integer supplierId = supplierMetaInfo.getSupplierId();
+
+            if (catalogCommissions != null) {
+                Double commission = catalogCommissions.get(supplierId);
+                if (commission != null) {
+                    commissionPercentages.put(supplierId, commission);
+                }
+            }
+
+            if (catalogAffiliateInfos != null) {
+                AffiliateInfo affiliateInfo = catalogAffiliateInfos.get(supplierId);
+                if (affiliateInfo != null) {
+                        affiliateInfoMap.put(supplierId,
+                            AffiliateAttributesDependencyData.AffiliateInfo.builder()
+                                    .reelzOffer(affiliateInfo.isReelzOffer())
+                                    .reelzOfferText(affiliateInfo.getReelzOfferText())
+                                    .build());
+                }
+            }
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 87-92]
+            if (catalogCommissions != null) {
+                Double commission = catalogCommissions.get(supplierId);
+                if (commission != null) {
+                    commissionPercentages.put(supplierId, commission);
+                }
+            }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 87-91]
+            if (catalogCommissions != null) {
+                Double commission = catalogCommissions.get(supplierId);
+                if (commission != null) {
+                    commissionPercentages.put(supplierId, commission);
+                }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 94-103]
+            if (catalogAffiliateInfos != null) {
+                AffiliateInfo affiliateInfo = catalogAffiliateInfos.get(supplierId);
+                if (affiliateInfo != null) {
+                        affiliateInfoMap.put(supplierId,
+                            AffiliateAttributesDependencyData.AffiliateInfo.builder()
+                                    .reelzOffer(affiliateInfo.isReelzOffer())
+                                    .reelzOfferText(affiliateInfo.getReelzOfferText())
+                                    .build());
+                }
+            }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 94-102]
+            if (catalogAffiliateInfos != null) {
+                AffiliateInfo affiliateInfo = catalogAffiliateInfos.get(supplierId);
+                if (affiliateInfo != null) {
+                        affiliateInfoMap.put(supplierId,
+                            AffiliateAttributesDependencyData.AffiliateInfo.builder()
+                                    .reelzOffer(affiliateInfo.isReelzOffer())
+                                    .reelzOfferText(affiliateInfo.getReelzOfferText())
+                                    .build());
+                }
+[END METHOD CONTEXT]
+
+### server/src/main/java/com/meesho/productamplifyr/server/view/AffiliateViewAdapter.java (modified, +20/-5)
+@@ -3,6 +3,7 @@
+L0003:  import com.meesho.productamplifyr.client.models.AffiliatePriceComponent;
+L0004:  import com.meesho.productamplifyr.client.models.ReturnExchangePolicy;
+L0005:  import com.meesho.productamplifyr.client.models.Supplier;
+L0006: +import com.meesho.productamplifyr.server.domainModels.dependencyData.AffiliateAttributesDependencyData;
+L0007:  import com.meesho.productamplifyr.server.domainModels.request.RequestDetail;
+L0008:  import com.meesho.productamplifyr.server.service.view.DependencyDataAdapter;
+L0009:  import com.meesho.productamplifyr.server.utils.NullUtils;
+@@ -14,10 +15,14 @@
+L0015:  public class AffiliateViewAdapter {
+L0016:  
+L0017:      public void setAffiliatePriceComponent(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+L----: -        supplier.setAffiliatePriceComponent(AffiliatePriceComponent.builder()
+L----: -                .affiliateCommissionPercentage(getCommissionPercentage(productId, supplier, dependencyData))
+L----: -                .build()
+L----: -        );
+L0018: +        AffiliateAttributesDependencyData.AffiliateInfo affiliateInfo = getAffiliateInfo(productId, supplier, dependencyData);
+L0019: +        AffiliatePriceComponent.AffiliatePriceComponentBuilder builder = AffiliatePriceComponent.builder()
+L0020: +                .affiliateCommissionPercentage(getCommissionPercentage(productId, supplier, dependencyData));
+L0021: +        if (Objects.nonNull(affiliateInfo)) {
+L0022: +            builder.reelzOffer(affiliateInfo.isReelzOffer())
+L0023: +                    .reelzOfferText(affiliateInfo.getReelzOfferText());
+L0024: +        }
+L0025: +        supplier.setAffiliatePriceComponent(builder.build());
+L0026:      }
+L0027:  
+L0028:      public void setReturnExchangePolicy(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData, RequestDetail requestDetail) {
+@@ -39,11 +44,21 @@ private Double getCommissionPercentage(Integer productId, Supplier supplier, Dep
+L0044:                  dependencyData,
+L0045:                  data ->
+L0046:                          data.getAffiliateAttributesDependencyData()
+L----: -                                .getProductIdToSupplierCommissionDataMap()
+L0047: +                                .getProductIdToSupplierAffiliateDataMap()
+L0048:                                  .get(productId)
+L0049:                                  .getCommissionPercentages()
+L0050:                                  .get(supplier.getId()),
+L0051:                  null
+L0052:          );
+L0053:      }
+L0054: +
+L0055: +    private AffiliateAttributesDependencyData.AffiliateInfo getAffiliateInfo(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+L0056: +        return NullUtils.getNested(
+L0057: +                dependencyData,
+L0058: +                data -> data.getAffiliateAttributesDependencyData()
+L0059: +                        .getProductIdToSupplierAffiliateDataMap()
+L0060: +                        .get(productId)
+L0061: +                        .getAffiliateInfoMap()
+L0062: +                        .get(supplier.getId()));
+L0063: +    }
+L0064:  }
+L0065: \ No newline at end of file
+
+[METHOD CONTEXT lines 17-26]
+    public void setAffiliatePriceComponent(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+        AffiliateAttributesDependencyData.AffiliateInfo affiliateInfo = getAffiliateInfo(productId, supplier, dependencyData);
+        AffiliatePriceComponent.AffiliatePriceComponentBuilder builder = AffiliatePriceComponent.builder()
+                .affiliateCommissionPercentage(getCommissionPercentage(productId, supplier, dependencyData));
+        if (Objects.nonNull(affiliateInfo)) {
+            builder.reelzOffer(affiliateInfo.isReelzOffer())
+                    .reelzOfferText(affiliateInfo.getReelzOfferText());
+        }
+        supplier.setAffiliatePriceComponent(builder.build());
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 17-24]
+    public void setAffiliatePriceComponent(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+        AffiliateAttributesDependencyData.AffiliateInfo affiliateInfo = getAffiliateInfo(productId, supplier, dependencyData);
+        AffiliatePriceComponent.AffiliatePriceComponentBuilder builder = AffiliatePriceComponent.builder()
+                .affiliateCommissionPercentage(getCommissionPercentage(productId, supplier, dependencyData));
+        if (Objects.nonNull(affiliateInfo)) {
+            builder.reelzOffer(affiliateInfo.isReelzOffer())
+                    .reelzOfferText(affiliateInfo.getReelzOfferText());
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 42-53]
+    private Double getCommissionPercentage(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+        return NullUtils.getOrDefault(
+                dependencyData,
+                data ->
+                        data.getAffiliateAttributesDependencyData()
+                                .getProductIdToSupplierAffiliateDataMap()
+                                .get(productId)
+                                .getCommissionPercentages()
+                                .get(supplier.getId()),
+                null
+        );
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 14-64]
+@Component
+public class AffiliateViewAdapter {
+
+    public void setAffiliatePriceComponent(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+        AffiliateAttributesDependencyData.AffiliateInfo affiliateInfo = getAffiliateInfo(productId, supplier, dependencyData);
+        AffiliatePriceComponent.AffiliatePriceComponentBuilder builder = AffiliatePriceComponent.builder()
+                .affiliateCommissionPercentage(getCommissionPercentage(productId, supplier, dependencyData));
+        if (Objects.nonNull(affiliateInfo)) {
+            builder.reelzOffer(affiliateInfo.isReelzOffer())
+                    .reelzOfferText(affiliateInfo.getReelzOfferText());
+        }
+        supplier.setAffiliatePriceComponent(builder.build());
+    }
+
+    public void setReturnExchangePolicy(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData, RequestDetail requestDetail) {
+        supplier.setReturnExchangePolicy(
+                ReturnExchangePolicy.builder()
+                        .returnExchangeWindowDays(
+                                Objects.nonNull(getCommissionPercentage(productId, supplier, dependencyData))
+                                        ? NullUtils.getOrDefault(requestDetail.getProductMetaInfoMap(),
+                                        productMetaInfoMap -> productMetaInfoMap.get(productId).getReturnExchangeWindowDays(),
+                                        null)
+                                        : null
+                        )
+                        .build()
+        );
+    }
+
+    private Double getCommissionPercentage(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+        return NullUtils.getOrDefault(
+                dependencyData,
+                data ->
+                        data.getAffiliateAttributesDependencyData()
+                                .getProductIdToSupplierAffiliateDataMap()
+                                .get(productId)
+                                .getCommissionPercentages()
+                                .get(supplier.getId()),
+                null
+        );
+    }
+
+    private AffiliateAttributesDependencyData.AffiliateInfo getAffiliateInfo(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+        return NullUtils.getNested(
+                dependencyData,
+                data -> data.getAffiliateAttributesDependencyData()
+                        .getProductIdToSupplierAffiliateDataMap()
+                        .get(productId)
+                        .getAffiliateInfoMap()
+                        .get(supplier.getId()));
+    }
+}
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 55-63]
+    private AffiliateAttributesDependencyData.AffiliateInfo getAffiliateInfo(Integer productId, Supplier supplier, DependencyDataAdapter dependencyData) {
+        return NullUtils.getNested(
+                dependencyData,
+                data -> data.getAffiliateAttributesDependencyData()
+                        .getProductIdToSupplierAffiliateDataMap()
+                        .get(productId)
+                        .getAffiliateInfoMap()
+                        .get(supplier.getId()));
+    }
+[END METHOD CONTEXT]
+
+### server/src/test/java/com/meesho/productamplifyr/server/downstream/service/affiliate/AffiliateAdapterTest.java (modified, +6/-6)
+@@ -140,11 +140,11 @@ void shouldReturnValidDependencyDataWhenResponseIsValid() {
+L0140:  
+L0141:              // Then
+L0142:              assertNotNull(result);
+L----: -            assertNotNull(result.getProductIdToSupplierCommissionDataMap());
+L----: -            assertFalse(result.getProductIdToSupplierCommissionDataMap().isEmpty());
+L0143: +            assertNotNull(result.getProductIdToSupplierAffiliateDataMap());
+L0144: +            assertFalse(result.getProductIdToSupplierAffiliateDataMap().isEmpty());
+L0145:  
+L0146:              // Verify commission data exists for the products
+L----: -            result.getProductIdToSupplierCommissionDataMap().forEach((productId, commissionData) -> {
+L0147: +            result.getProductIdToSupplierAffiliateDataMap().forEach((productId, commissionData) -> {
+L0148:                  assertNotNull(commissionData);
+L0149:                  assertNotNull(commissionData.getCommissionPercentages());
+L0150:              });
+@@ -178,7 +178,7 @@ void shouldHandleMissingCommissionDataGracefully() {
+L0178:              // Then
+L0179:              assertNotNull(result);
+L0180:              // Verify that products with null commission data are handled gracefully
+L----: -            result.getProductIdToSupplierCommissionDataMap().values().forEach(commissionData -> {
+L0181: +            result.getProductIdToSupplierAffiliateDataMap().values().forEach(commissionData -> {
+L0182:                  assertNotNull(commissionData);
+L0183:                  assertNotNull(commissionData.getCommissionPercentages());
+L0184:                  // Commission percentages map should not contain null values
+@@ -201,7 +201,7 @@ void shouldHandleEmptyCommissionPercentagesMap() {
+L0201:  
+L0202:              // Then
+L0203:              assertNotNull(result);
+L----: -            result.getProductIdToSupplierCommissionDataMap().values().forEach(commissionData ->
+L0204: +            result.getProductIdToSupplierAffiliateDataMap().values().forEach(commissionData ->
+L0205:                      assertTrue(commissionData.getCommissionPercentages().isEmpty())
+L0206:              );
+L0207:          }
+@@ -222,7 +222,7 @@ void shouldHandleNullCatalogSuppliersCommissionPercentages() {
+L0222:  
+L0223:              // Then
+L0224:              assertNotNull(result);
+L----: -            result.getProductIdToSupplierCommissionDataMap().values().forEach(commissionData ->
+L0225: +            result.getProductIdToSupplierAffiliateDataMap().values().forEach(commissionData ->
+L0226:                      assertTrue(commissionData.getCommissionPercentages().isEmpty())
+L0227:              );
+L0228:          }
+
+[METHOD CONTEXT lines 128-151]
+        @Test
+        @DisplayName("Should return valid dependency data when response is valid")
+        void shouldReturnValidDependencyDataWhenResponseIsValid() {
+            // Given
+            RequestDetail requestDetail = CommonObjectsForTest.getRequestDetailWithAllData();
+
+            // Create response with commission data that matches the existing product structure
+            // CommonObjectsForTest creates products with IDs 1,2,3,4 and catalogs 10,20,30
+            AffiliateAttributesResponse response = createValidAffiliateAttributesResponseForCommonData();
+
+            // When
+            AffiliateAttributesDependencyData result = AffiliateAdapter.getAffiliateAttributesDependencyData(requestDetail, response);
+
+            // Then
+            assertNotNull(result);
+            assertNotNull(result.getProductIdToSupplierAffiliateDataMap());
+            assertFalse(result.getProductIdToSupplierAffiliateDataMap().isEmpty());
+
+            // Verify commission data exists for the products
+            result.getProductIdToSupplierAffiliateDataMap().forEach((productId, commissionData) -> {
+                assertNotNull(commissionData);
+                assertNotNull(commissionData.getCommissionPercentages());
+            });
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 146-150]
+            // Verify commission data exists for the products
+            result.getProductIdToSupplierAffiliateDataMap().forEach((productId, commissionData) -> {
+                assertNotNull(commissionData);
+                assertNotNull(commissionData.getCommissionPercentages());
+            });
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 179-187]
+            assertNotNull(result);
+            // Verify that products with null commission data are handled gracefully
+            result.getProductIdToSupplierAffiliateDataMap().values().forEach(commissionData -> {
+                assertNotNull(commissionData);
+                assertNotNull(commissionData.getCommissionPercentages());
+                // Commission percentages map should not contain null values
+                commissionData.getCommissionPercentages().values().forEach(Assertions::assertNotNull
+                );
+            });
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 190-207]
+        @Test
+        @DisplayName("Should handle empty commission percentages map")
+        void shouldHandleEmptyCommissionPercentagesMap() {
+            // Given
+            RequestDetail requestDetail = CommonObjectsForTest.getRequestDetailWithAllData();
+
+            // Use empty response
+            AffiliateAttributesResponse response = createEmptyAffiliateAttributesResponse();
+
+            // When
+            AffiliateAttributesDependencyData result = AffiliateAdapter.getAffiliateAttributesDependencyData(requestDetail, response);
+
+            // Then
+            assertNotNull(result);
+            result.getProductIdToSupplierAffiliateDataMap().values().forEach(commissionData ->
+                    assertTrue(commissionData.getCommissionPercentages().isEmpty())
+            );
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 209-228]
+        @Test
+        @DisplayName("Should handle null catalog suppliers commission percentages")
+        void shouldHandleNullCatalogSuppliersCommissionPercentages() {
+            // Given
+            RequestDetail requestDetail = CommonObjectsForTest.getRequestDetailWithAllData();
+
+            // Create response with null commission percentages
+            AffiliateAttributesResponse response = AffiliateAttributesResponse.builder()
+                    .catalogSuppliersCommissionPercentages(null)
+                    .build();
+
+            // When
+            AffiliateAttributesDependencyData result = AffiliateAdapter.getAffiliateAttributesDependencyData(requestDetail, response);
+
+            // Then
+            assertNotNull(result);
+            result.getProductIdToSupplierAffiliateDataMap().values().forEach(commissionData ->
+                    assertTrue(commissionData.getCommissionPercentages().isEmpty())
+            );
+        }
+[END METHOD CONTEXT]
+
+### server/src/test/java/com/meesho/productamplifyr/server/view/AffiliateViewAdapterTest.java (modified, +17/-17)
+@@ -90,7 +90,7 @@ void shouldSetAffiliatePriceComponentWithNullCommissionWhenDependencyDataIsNull(
+L0090:          void shouldSetAffiliatePriceComponentWithNullCommissionWhenProductCommissionMapIsNull() {
+L0091:              // Given
+L0092:              when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+L----: -            when(affiliateAttributesDependencyData.getProductIdToSupplierCommissionDataMap()).thenReturn(null);
+L0093: +            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(null);
+L0094:  
+L0095:              // When
+L0096:              affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+@@ -104,9 +104,9 @@ void shouldSetAffiliatePriceComponentWithNullCommissionWhenProductCommissionMapI
+L0104:          @DisplayName("Should set affiliate price component with null commission percentage when product not found in map")
+L0105:          void shouldSetAffiliatePriceComponentWithNullCommissionWhenProductNotFoundInMap() {
+L0106:              // Given
+L----: -            Map<Integer, AffiliateAttributesDependencyData.SupplierCommissionData> productCommissionMap = new HashMap<>();
+L0107: +            Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+L0108:              when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+L----: -            when(affiliateAttributesDependencyData.getProductIdToSupplierCommissionDataMap()).thenReturn(productCommissionMap);
+L0109: +            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+L0110:  
+L0111:              // When
+L0112:              affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+@@ -120,10 +120,10 @@ void shouldSetAffiliatePriceComponentWithNullCommissionWhenProductNotFoundInMap(
+L0120:          @DisplayName("Should set affiliate price component with null commission percentage when supplier commission data is null")
+L0121:          void shouldSetAffiliatePriceComponentWithNullCommissionWhenSupplierCommissionDataIsNull() {
+L0122:              // Given
+L----: -            Map<Integer, AffiliateAttributesDependencyData.SupplierCommissionData> productCommissionMap = new HashMap<>();
+L0123: +            Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+L0124:              productCommissionMap.put(productId, null);
+L0125:              when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+L----: -            when(affiliateAttributesDependencyData.getProductIdToSupplierCommissionDataMap()).thenReturn(productCommissionMap);
+L0126: +            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+L0127:  
+L0128:              // When
+L0129:              affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+@@ -137,16 +137,16 @@ void shouldSetAffiliatePriceComponentWithNullCommissionWhenSupplierCommissionDat
+L0137:          @DisplayName("Should set affiliate price component with null commission percentage when commission percentages map is null")
+L0138:          void shouldSetAffiliatePriceComponentWithNullCommissionWhenCommissionPercentagesMapIsNull() {
+L0139:              // Given
+L----: -            AffiliateAttributesDependencyData.SupplierCommissionData supplierCommissionData =
+L----: -                    AffiliateAttributesDependencyData.SupplierCommissionData.builder()
+L0140: +            AffiliateAttributesDependencyData.SupplierAffiliateData supplierCommissionData =
+L0141: +                    AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+L0142:                              .commissionPercentages(null)
+L0143:                              .build();
+L0144:  
+L----: -            Map<Integer, AffiliateAttributesDependencyData.SupplierCommissionData> productCommissionMap = new HashMap<>();
+L0145: +            Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+L0146:              productCommissionMap.put(productId, supplierCommissionData);
+L0147:  
+L0148:              when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+L----: -            when(affiliateAttributesDependencyData.getProductIdToSupplierCommissionDataMap()).thenReturn(productCommissionMap);
+L0149: +            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+L0150:  
+L0151:              // When
+L0152:              affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+@@ -163,16 +163,16 @@ void shouldSetAffiliatePriceComponentWithNullCommissionWhenSupplierNotFoundInCom
+L0163:              Map<Integer, Double> commissionPercentages = new HashMap<>();
+L0164:              // Not adding the supplierId to the map
+L0165:  
+L----: -            AffiliateAttributesDependencyData.SupplierCommissionData supplierCommissionData =
+L----: -                    AffiliateAttributesDependencyData.SupplierCommissionData.builder()
+L0166: +            AffiliateAttributesDependencyData.SupplierAffiliateData supplierCommissionData =
+L0167: +                    AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+L0168:                              .commissionPercentages(commissionPercentages)
+L0169:                              .build();
+L0170:  
+L----: -            Map<Integer, AffiliateAttributesDependencyData.SupplierCommissionData> productCommissionMap = new HashMap<>();
+L0171: +            Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+L0172:              productCommissionMap.put(productId, supplierCommissionData);
+L0173:  
+L0174:              when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+L----: -            when(affiliateAttributesDependencyData.getProductIdToSupplierCommissionDataMap()).thenReturn(productCommissionMap);
+L0175: +            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+L0176:  
+L0177:              // When
+L0178:              affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+@@ -283,16 +283,16 @@ private void setupMocksForCommissionPercentage(Integer productId, Integer suppli
+L0283:          Map<Integer, Double> commissionPercentages = new HashMap<>();
+L0284:          commissionPercentages.put(supplierId, commissionPercentage);
+L0285:  
+L----: -        AffiliateAttributesDependencyData.SupplierCommissionData supplierCommissionData =
+L----: -                AffiliateAttributesDependencyData.SupplierCommissionData.builder()
+L0286: +        AffiliateAttributesDependencyData.SupplierAffiliateData supplierCommissionData =
+L0287: +                AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+L0288:                          .commissionPercentages(commissionPercentages)
+L0289:                          .build();
+L0290:  
+L----: -        Map<Integer, AffiliateAttributesDependencyData.SupplierCommissionData> productCommissionMap = new HashMap<>();
+L0291: +        Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+L0292:          productCommissionMap.put(productId, supplierCommissionData);
+L0293:  
+L0294:          when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+L----: -        when(affiliateAttributesDependencyData.getProductIdToSupplierCommissionDataMap()).thenReturn(productCommissionMap);
+L0295: +        when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+L0296:      }
+L0297:  
+L0298:      private void setupMocksForReturnExchangeWindowDays(Integer returnExchangeWindowDays) {
+
+[METHOD CONTEXT lines 88-101]
+        @Test
+        @DisplayName("Should set affiliate price component with null commission percentage when product commission map is null")
+        void shouldSetAffiliatePriceComponentWithNullCommissionWhenProductCommissionMapIsNull() {
+            // Given
+            when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(null);
+
+            // When
+            affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+
+            // Then
+            assertNotNull(supplier.getAffiliatePriceComponent());
+            assertNull(supplier.getAffiliatePriceComponent().getAffiliateCommissionPercentage());
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 103-117]
+        @Test
+        @DisplayName("Should set affiliate price component with null commission percentage when product not found in map")
+        void shouldSetAffiliatePriceComponentWithNullCommissionWhenProductNotFoundInMap() {
+            // Given
+            Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+            when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+
+            // When
+            affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+
+            // Then
+            assertNotNull(supplier.getAffiliatePriceComponent());
+            assertNull(supplier.getAffiliatePriceComponent().getAffiliateCommissionPercentage());
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 119-134]
+        @Test
+        @DisplayName("Should set affiliate price component with null commission percentage when supplier commission data is null")
+        void shouldSetAffiliatePriceComponentWithNullCommissionWhenSupplierCommissionDataIsNull() {
+            // Given
+            Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+            productCommissionMap.put(productId, null);
+            when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+
+            // When
+            affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+
+            // Then
+            assertNotNull(supplier.getAffiliatePriceComponent());
+            assertNull(supplier.getAffiliatePriceComponent().getAffiliateCommissionPercentage());
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 136-157]
+        @Test
+        @DisplayName("Should set affiliate price component with null commission percentage when commission percentages map is null")
+        void shouldSetAffiliatePriceComponentWithNullCommissionWhenCommissionPercentagesMapIsNull() {
+            // Given
+            AffiliateAttributesDependencyData.SupplierAffiliateData supplierCommissionData =
+                    AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+                            .commissionPercentages(null)
+                            .build();
+
+            Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+            productCommissionMap.put(productId, supplierCommissionData);
+
+            when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+
+            // When
+            affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+
+            // Then
+            assertNotNull(supplier.getAffiliatePriceComponent());
+            assertNull(supplier.getAffiliatePriceComponent().getAffiliateCommissionPercentage());
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 159-183]
+        @Test
+        @DisplayName("Should set affiliate price component with null commission percentage when supplier not found in commission map")
+        void shouldSetAffiliatePriceComponentWithNullCommissionWhenSupplierNotFoundInCommissionMap() {
+            // Given
+            Map<Integer, Double> commissionPercentages = new HashMap<>();
+            // Not adding the supplierId to the map
+
+            AffiliateAttributesDependencyData.SupplierAffiliateData supplierCommissionData =
+                    AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+                            .commissionPercentages(commissionPercentages)
+                            .build();
+
+            Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+            productCommissionMap.put(productId, supplierCommissionData);
+
+            when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+            when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+
+            // When
+            affiliateViewAdapter.setAffiliatePriceComponent(productId, supplier, dependencyDataAdapter);
+
+            // Then
+            assertNotNull(supplier.getAffiliatePriceComponent());
+            assertNull(supplier.getAffiliatePriceComponent().getAffiliateCommissionPercentage());
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 282-296]
+    private void setupMocksForCommissionPercentage(Integer productId, Integer supplierId, Double commissionPercentage) {
+        Map<Integer, Double> commissionPercentages = new HashMap<>();
+        commissionPercentages.put(supplierId, commissionPercentage);
+
+        AffiliateAttributesDependencyData.SupplierAffiliateData supplierCommissionData =
+                AffiliateAttributesDependencyData.SupplierAffiliateData.builder()
+                        .commissionPercentages(commissionPercentages)
+                        .build();
+
+        Map<Integer, AffiliateAttributesDependencyData.SupplierAffiliateData> productCommissionMap = new HashMap<>();
+        productCommissionMap.put(productId, supplierCommissionData);
+
+        when(dependencyDataAdapter.getAffiliateAttributesDependencyData()).thenReturn(affiliateAttributesDependencyData);
+        when(affiliateAttributesDependencyData.getProductIdToSupplierAffiliateDataMap()).thenReturn(productCommissionMap);
+    }
+[END METHOD CONTEXT]
+
+### wrapper/pom.xml (modified, +3/-3)
+@@ -5,19 +5,19 @@
+L0005:      <parent>
+L0006:          <groupId>com.meesho</groupId>
+L0007:          <artifactId>product-amplifyr</artifactId>
+L----: -        <version>1.15.28</version>
+L0008: +        <version>1.15.29</version>
+L0009:      </parent>
+L0010:      <groupId>com.meesho.product-amplifyr</groupId>
+L0011:      <artifactId>wrapper</artifactId>
+L----: -    <version>1.15.28</version>
+L0012: +    <version>1.15.29</version>
+L0013:      <properties>
+L0014:          <spring-cloud.version>2021.0.3</spring-cloud.version>
+L0015:      </properties>
+L0016:      <dependencies>
+L0017:          <dependency>
+L0018:              <groupId>com.meesho.product-amplifyr</groupId>
+L0019:              <artifactId>client</artifactId>
+L----: -            <version>1.15.28</version>
+L0020: +            <version>1.15.29</version>
+L0021:              <scope>compile</scope>
+L0022:          </dependency>
+L0023:          <dependency>

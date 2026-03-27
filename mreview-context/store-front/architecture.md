@@ -1,0 +1,7 @@
+## Architecture & Constraints
+- All new dynamic config keys must be declared in the `application-schema` file; config values in `application-dyn-int.yml` / `application-dyn-prd.yml` are not valid without a corresponding schema entry.
+- New service clients (gRPC or otherwise) must be published to dev JFrog before the consuming service code is merged (`store-front-service/pom.xml` dependency must resolve).
+- AB experiments that target logged-in users must be explicitly excluded from the anonymous user path; if anonymous support is needed, the experiment must also be added to `getABExperimentByTypeBulkV2CommandReqForAnonymousCLP` in `ABServiceAdapter`.
+- Request flags sent to `ProductAmplifierAdapter` (pamp) must align with the standard set used for other feed pages (FY, recommendation, search); new feed flows like Browsing History must reuse the same builder method rather than defining ad-hoc flag sets.
+- View adapters must follow the single-responsibility decomposition pattern (e.g., `MediaAdapter`); `PACatalogFeedViewAdapter` and `CatalogFeedPopulationHandlerV3` are explicitly flagged as candidates for extraction when new feature logic is added.
+- Version thresholds for client-specific behavior (e.g., iOS version checks in `EnhancementDataAdapter`) must be kept consistent between code and inline comments; discrepancies (100 vs. 255) are treated as bugs.

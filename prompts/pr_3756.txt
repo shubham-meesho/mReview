@@ -1,0 +1,1450 @@
+=== SYSTEM PROMPT ===
+You are a thorough, senior code reviewer. Review this pull request diff as carefully as a senior engineer would — check every changed file, every new method, every branch.
+
+Language: Java
+
+Rules to apply:
+CORRECTNESS & SAFETY
+- Checked exceptions must be caught or declared; never swallow exceptions silently
+- Use try-with-resources for anything that implements Closeable/AutoCloseable
+- Check all CompletableFuture results; unchecked failures and executor rejections are silent
+- String comparison must use .equals(), never ==
+- Avoid raw types (List, Map); always parameterise generics
+- Resource leaks: close streams, connections, and readers in finally or try-with-resources
+- Numeric operations on Long/Integer can be negative; guard percentage checks with Math.abs()
+- Throw specific exceptions, not raw RuntimeException — callers need to distinguish failure types
+
+NULL SAFETY
+- Prefer Optional<T> over returning null from methods
+- Every public method that can return null must document it with @Nullable
+- Guard all external inputs and injected config objects with null checks before dereferencing
+- Chained calls like a.getB().getC() need null guards at every step
+
+CONCURRENCY
+- Avoid Thread.sleep() in application code; use ScheduledExecutorService instead
+- Guard shared mutable state with synchronisation; document thread-safety assumptions
+- CompletableFuture.runAsync() without a bounded executor uses ForkJoinPool — always pass an executor
+- Async tasks that can be rejected by a full executor should be wrapped in try-catch at the call site
+
+DESIGN & MAINTAINABILITY
+- Methods with more than one responsibility should be split
+- Boolean flag parameters (doX=true) are a code smell; prefer strategy or polymorphism
+- Dead code branches (both if/else returning the same value) should be removed
+- Magic numbers should be named constants
+- Duplicate logic blocks (copy-paste) should be extracted to a shared method
+- New public methods on shared services should have Javadoc explaining intent and edge cases
+
+TESTING & OBSERVABILITY
+- New branching logic (if/else, feature flags) must have corresponding unit tests
+- New classes should have test coverage for both happy path and failure scenarios
+- New code paths should emit metrics or structured logs to make them observable in production
+- Log levels matter: use log.error only for actionable failures, log.warn for degraded states
+
+SPRING / FRAMEWORK PATTERNS
+- Use @Override on every method that overrides or implements an interface
+- Prefer constructor injection over field injection for testability
+- @Transactional boundaries must be on public methods only
+- Executor beans (ExecutorService) should be named and sized explicitly in config
+
+SERIALIZATION & DEPLOYMENT COMPATIBILITY
+- Any class that is cached (in-memory, Redis, Memcached) or sent over the wire must have @JsonIgnoreProperties(ignoreUnknown = true); without it, adding a new field will cause deserialization failures on older pods during a rolling deployment
+- New fields added to cached or serialized objects must be nullable or have a default value so older serialized payloads (missing the field) can still be deserialized
+- Removing or renaming a field from a cached/serialized object is a breaking change; the old name must be kept (or @JsonAlias used) until all pods and caches are drained
+- Enum values added to a serialized enum must not break existing persisted values; deserializing an unknown enum value without READ_UNKNOWN_ENUM_VALUES_AS_NULL or a default will throw
+
+HOW TO REVIEW
+- Read the PR description to understand the intent, then check if the implementation matches
+- For every new method or class: check correctness, null safety, error handling, and test coverage
+- For every new branch (if/else/switch): check all paths are handled, edge cases are covered
+- For every new async/concurrent operation: check executor bounds, rejection handling, thread safety
+- Flag issues even if you are moderately confident — the confidence score lets us filter later
+- Do NOT skip files because they look simple; simple files often hide subtle bugs
+
+Each line in the diff is prefixed with its new-file line number: `L0010:` for context/added lines, `L----:` for deleted lines. Use exactly that number as the `line` field.
+
+Some files also include a `[METHOD CONTEXT lines N-M]` block — use it to understand the full method signature and logic flow, but always use the L{number}: line numbers from the diff (not line numbers from the method context block) when setting the `line` field.
+
+For each issue found, output a JSON object:
+{
+  "file": "<relative file path>",
+  "line": <line number from L{number}: prefix, integer>,
+  "severity": "<BLOCKER|WARNING|SUGGESTION|NITPICK>",
+  "category": "<naming|error-handling|concurrency|null-safety|resource-leak|logic|security|test-coverage|style|other>",
+  "message": "<one sentence, actionable, specific to this code>",
+  "rationale": "<why this matters, 1-2 sentences>",
+  "confidence": <float 0.0-1.0>
+}
+
+Return ONLY a valid JSON array. No prose, no markdown, no code fences.
+Include all issues with confidence >= 0.65. Be thorough — it is better to flag something debatable than to silently miss a real bug.
+
+
+=== USER MESSAGE ===
+PR #3756: Test PR
+
+### store-front-service/src/main/java/com/meesho/aggregator/service/callmanager/commandProviders/ProductAggregatorCommandProvider.java (modified, +30/-6)
+@@ -4,6 +4,7 @@
+L0004:  import com.meesho.aggregator.service.commands.productAggregatorCommand.ProductAggregationCommand;
+L0005:  import com.meesho.aggregator.service.commands.productAggregatorCommand.ProductAmplifierCartCommand;
+L0006:  import com.meesho.aggregator.service.commands.productAggregatorCommand.ProductAmplifierCommand;
+L0007: +import com.meesho.aggregator.service.commands.productAggregatorCommand.ProductAmplifierGoCommand;
+L0008:  import com.meesho.storefront.data.domainModels.misc.CommandsData;
+L0009:  import com.meesho.storefront.service.commands.abCommands.ABFetchExperimentByTypeAndRefIdCommand;
+L0010:  import com.meesho.storefront.service.commands.abCommands.ABFetchExperimentByTypeBulkV2Command;
+@@ -14,6 +15,7 @@
+L0015:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.AB.AB_EXPERIMENT_BY_TYPE_AND_REF_ID;
+L0016:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.AB.AB_EXPERIMENT_BY_TYPE_BULK_V2;
+L0017:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.ProductAggregator.PRODUCT_AGGREGATOR_COMMAND;
+L0018: +import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.ProductAmplifier.PRODUCT_AMPLIFIER_GO_PA_COMMAND;
+L0019:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.ProductAmplifier.PRODUCT_AMPLIFIER_PA_CART_COMMAND;
+L0020:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.ProductAmplifier.PRODUCT_AMPLIFIER_PA_COMMAND;
+L0021:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.SessionManager.UPDATE_SESSION;
+@@ -39,12 +41,34 @@ public CommandsData provideProductAggregatorCommandData(CommandRequest commandRe
+L0041:                  AB_EXPERIMENT_BY_TYPE_AND_REF_ID,
+L0042:                  () -> new ABFetchExperimentByTypeAndRefIdCommand(commandRequest.getAbExperimentByTypeAndRefIdRequest())
+L0043:          );
+L----: -        commandsData.putIfRequestNotEmpty(
+L----: -                commandRequest.getProductAmplifierRequest(),
+L----: -                PRODUCT_AMPLIFIER_PA_COMMAND,
+L----: -                () -> new ProductAmplifierCommand(commandRequest.getProductAmplifierRequest(),
+L----: -                        NullUtils.getOrDefault(commandRequest, r -> r.getRequestMeta().getRequestContextForPA(), "None"))
+L----: -        );
+L0044: +        boolean divertToGo = commandRequest.getRequestMeta() != null && commandRequest.getRequestMeta().isDivertToGoProductAmplifier();
+L0045: +        boolean isSampling = commandRequest.getRequestMeta() != null && commandRequest.getRequestMeta().isSamplingEnabledForProductAmplifier();
+L0046: +        String requestContextForPA = NullUtils.getOrDefault(commandRequest, r -> r.getRequestMeta().getRequestContextForPA(), "None");
+L0047: +
+L0048: +        if (isSampling) {
+L0049: +            commandsData.putIfRequestNotEmpty(
+L0050: +                    commandRequest.getProductAmplifierRequest(),
+L0051: +                    PRODUCT_AMPLIFIER_PA_COMMAND,
+L0052: +                    () -> new ProductAmplifierCommand(commandRequest.getProductAmplifierRequest(), requestContextForPA)
+L0053: +            );
+L0054: +            commandsData.putIfRequestNotEmpty(
+L0055: +                    commandRequest.getProductAmplifierRequest(),
+L0056: +                    PRODUCT_AMPLIFIER_GO_PA_COMMAND,
+L0057: +                    () -> new ProductAmplifierGoCommand(commandRequest.getProductAmplifierRequest(), requestContextForPA)
+L0058: +            );
+L0059: +        } else if (divertToGo) {
+L0060: +            commandsData.putIfRequestNotEmpty(
+L0061: +                    commandRequest.getProductAmplifierRequest(),
+L0062: +                    PRODUCT_AMPLIFIER_GO_PA_COMMAND,
+L0063: +                    () -> new ProductAmplifierGoCommand(commandRequest.getProductAmplifierRequest(), requestContextForPA)
+L0064: +            );
+L0065: +        } else {
+L0066: +            commandsData.putIfRequestNotEmpty(
+L0067: +                    commandRequest.getProductAmplifierRequest(),
+L0068: +                    PRODUCT_AMPLIFIER_PA_COMMAND,
+L0069: +                    () -> new ProductAmplifierCommand(commandRequest.getProductAmplifierRequest(), requestContextForPA)
+L0070: +            );
+L0071: +        }
+L0072:          if (commandRequest.getUpdateSessionRequestV2() != null) {
+L0073:              commandsData.putIfRequestNotEmpty(
+L0074:                      commandRequest.getUpdateSessionRequestV2(),
+
+[METHOD CONTEXT lines 25-62]
+    public CommandsData provideProductAggregatorCommandData(CommandRequest commandRequest) {
+        CommandsData commandsData = new CommandsData();
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getPaRequest(),
+                PRODUCT_AGGREGATOR_COMMAND,
+                () -> new ProductAggregationCommand(commandRequest.getPaRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentRequest(),
+                AB_EXPERIMENT_BY_TYPE_BULK_V2,
+                () -> new ABFetchExperimentByTypeBulkV2Command(commandRequest.getAbExperimentRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentByTypeAndRefIdRequest(),
+                AB_EXPERIMENT_BY_TYPE_AND_REF_ID,
+                () -> new ABFetchExperimentByTypeAndRefIdCommand(commandRequest.getAbExperimentByTypeAndRefIdRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getProductAmplifierRequest(),
+                PRODUCT_AMPLIFIER_PA_COMMAND,
+                () -> new ProductAmplifierCommand(commandRequest.getProductAmplifierRequest(),
+                        NullUtils.getOrDefault(commandRequest, r -> r.getRequestMeta().getRequestContextForPA(), "None"))
+        );
+        if (commandRequest.getUpdateSessionRequestV2() != null) {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequestV2(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequestV2())
+            );
+        } else {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequest(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequest())
+            );
+        }
+        return commandsData;
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 34-60]
+                AB_EXPERIMENT_BY_TYPE_BULK_V2,
+                () -> new ABFetchExperimentByTypeBulkV2Command(commandRequest.getAbExperimentRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentByTypeAndRefIdRequest(),
+                AB_EXPERIMENT_BY_TYPE_AND_REF_ID,
+                () -> new ABFetchExperimentByTypeAndRefIdCommand(commandRequest.getAbExperimentByTypeAndRefIdRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getProductAmplifierRequest(),
+                PRODUCT_AMPLIFIER_PA_COMMAND,
+                () -> new ProductAmplifierCommand(commandRequest.getProductAmplifierRequest(),
+                        NullUtils.getOrDefault(commandRequest, r -> r.getRequestMeta().getRequestContextForPA(), "None"))
+        );
+        if (commandRequest.getUpdateSessionRequestV2() != null) {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequestV2(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequestV2())
+            );
+        } else {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequest(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequest())
+            );
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 22-118]
+@Service
+public class ProductAggregatorCommandProvider {
+
+    public CommandsData provideProductAggregatorCommandData(CommandRequest commandRequest) {
+        CommandsData commandsData = new CommandsData();
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getPaRequest(),
+                PRODUCT_AGGREGATOR_COMMAND,
+                () -> new ProductAggregationCommand(commandRequest.getPaRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentRequest(),
+                AB_EXPERIMENT_BY_TYPE_BULK_V2,
+                () -> new ABFetchExperimentByTypeBulkV2Command(commandRequest.getAbExperimentRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentByTypeAndRefIdRequest(),
+                AB_EXPERIMENT_BY_TYPE_AND_REF_ID,
+                () -> new ABFetchExperimentByTypeAndRefIdCommand(commandRequest.getAbExperimentByTypeAndRefIdRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getProductAmplifierRequest(),
+                PRODUCT_AMPLIFIER_PA_COMMAND,
+                () -> new ProductAmplifierCommand(commandRequest.getProductAmplifierRequest(),
+                        NullUtils.getOrDefault(commandRequest, r -> r.getRequestMeta().getRequestContextForPA(), "None"))
+        );
+        if (commandRequest.getUpdateSessionRequestV2() != null) {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequestV2(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequestV2())
+            );
+        } else {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequest(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequest())
+            );
+        }
+        return commandsData;
+    }
+
+    public CommandsData provideProductAggregatorCommandDataPAWrapper(CommandRequest commandRequest) {
+        CommandsData commandsData = new CommandsData();
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentRequest(),
+                AB_EXPERIMENT_BY_TYPE_BULK_V2,
+                () -> new ABFetchExperimentByTypeBulkV2Command(commandRequest.getAbExperimentRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentByTypeAndRefIdRequest(),
+                AB_EXPERIMENT_BY_TYPE_AND_REF_ID,
+                () -> new ABFetchExperimentByTypeAndRefIdCommand(commandRequest.getAbExperimentByTypeAndRefIdRequest())
+        );
+        if (commandRequest.getUpdateSessionRequestV2() != null) {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequestV2(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequestV2())
+            );
+        } else {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequest(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequest())
+            );
+        }
+        return commandsData;
+    }
+
+    public CommandsData provideProductAggregatorCommandDataCart(CommandRequest commandRequest) {
+        CommandsData commandsData = new CommandsData();
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getProductAmplifierRequest(),
+                PRODUCT_AMPLIFIER_PA_CART_COMMAND,
+                () -> new ProductAmplifierCartCommand(commandRequest.getProductAmplifierRequest(),
+                        NullUtils.getOrDefault(commandRequest, r -> r.getRequestMeta().getRequestContextForPA(), "None"))
+        );
+        return commandsData;
+    }
+
+    public CommandsData provideProductAggregatorCommandDataVariation(CommandRequest commandRequest) {
+        CommandsData commandsData = new CommandsData();
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getProductAmplifierRequest(),
+                PRODUCT_AMPLIFIER_PA_COMMAND,
+                () -> new ProductAmplifierCommand(commandRequest.getProductAmplifierRequest(),
+                        NullUtils.getOrDefault(commandRequest, r -> r.getRequestMeta().getRequestContextForPA(), "None"))
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentRequest(),
+                AB_EXPERIMENT_BY_TYPE_BULK_V2,
+                () -> new ABFetchExperimentByTypeBulkV2Command(commandRequest.getAbExperimentRequest())
+        );
+        return commandsData;
+    }
+}
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 64-90]
+    public CommandsData provideProductAggregatorCommandDataPAWrapper(CommandRequest commandRequest) {
+        CommandsData commandsData = new CommandsData();
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentRequest(),
+                AB_EXPERIMENT_BY_TYPE_BULK_V2,
+                () -> new ABFetchExperimentByTypeBulkV2Command(commandRequest.getAbExperimentRequest())
+        );
+        commandsData.putIfRequestNotEmpty(
+                commandRequest.getAbExperimentByTypeAndRefIdRequest(),
+                AB_EXPERIMENT_BY_TYPE_AND_REF_ID,
+                () -> new ABFetchExperimentByTypeAndRefIdCommand(commandRequest.getAbExperimentByTypeAndRefIdRequest())
+        );
+        if (commandRequest.getUpdateSessionRequestV2() != null) {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequestV2(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequestV2())
+            );
+        } else {
+            commandsData.putIfRequestNotEmpty(
+                    commandRequest.getUpdateSessionRequest(),
+                    UPDATE_SESSION,
+                    () -> new UpdateSessionCommand<>(commandRequest.getUpdateSessionRequest())
+            );
+        }
+        return commandsData;
+    }
+[END METHOD CONTEXT]
+
+### store-front-service/src/main/java/com/meesho/aggregator/service/callmanager/futureResolvers/ProductAggregatorFutureResolver.java (modified, +31/-0)
+@@ -22,6 +22,7 @@
+L0022:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.AB.AB_EXPERIMENT_BY_TYPE_AND_REF_ID;
+L0023:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.AB.AB_EXPERIMENT_BY_TYPE_BULK_V2;
+L0024:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.ProductAggregator.PRODUCT_AGGREGATOR_COMMAND;
+L0025: +import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.ProductAmplifier.PRODUCT_AMPLIFIER_GO_PA_COMMAND;
+L0026:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.ProductAmplifier.PRODUCT_AMPLIFIER_PA_CART_COMMAND;
+L0027:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.ProductAmplifier.PRODUCT_AMPLIFIER_PA_COMMAND;
+L0028:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.CommandKeys.SessionManager.UPDATE_SESSION;
+@@ -127,6 +128,36 @@ public CommandResponse resolveProductAmplifierResponseForPAWrapper(FuturesData f
+L0128:  
+L0129:  
+L0130:  
+L0131: +    public ProductAggregationResponse resolveGoProductAmplifierResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+L0132: +        Pair<Integer, String> paResponseString = getOrDefaultEmptyPair(futuresData, PRODUCT_AMPLIFIER_GO_PA_COMMAND);
+L0133: +        return CommonUtils.commandResponseHandler(paResponseString, PRODUCT_AMPLIFIER_TYPE_REFERENCE, PRODUCT_AMPLIFIER_GO_PA_COMMAND);
+L0134: +    }
+L0135: +
+L0136: +    public CommandResponse resolveGoProductAmplifierFullResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+L0137: +        Pair<Integer, String> paResponseString = getOrDefaultEmptyPair(futuresData, PRODUCT_AMPLIFIER_GO_PA_COMMAND);
+L0138: +        Pair<Integer, String> abResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_BULK_V2);
+L0139: +        Pair<Integer, String> abRefIdResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_AND_REF_ID);
+L0140: +
+L0141: +        ProductAggregationResponse paResponse = CommonUtils.commandResponseHandler(
+L0142: +                paResponseString, PRODUCT_AMPLIFIER_TYPE_REFERENCE, PRODUCT_AMPLIFIER_GO_PA_COMMAND);
+L0143: +        Map<String, ExperimentConfigResponse> abResponse = CommonUtils.silentCommandResponseHandler(
+L0144: +                abResponseString, MAP_OF_EXP_TYPE_TO_CONFIG_REFERENCE, AB_EXPERIMENT_BY_TYPE_BULK_V2);
+L0145: +        Map<String, ExperimentConfigResponse> fetchByExpTypeAndRefIdsRes = CommonUtils.silentCommandResponseHandler(
+L0146: +                abRefIdResponseString, MAP_OF_REF_ID_TO_CONFIG_REFERENCE, AB_EXPERIMENT_BY_TYPE_AND_REF_ID);
+L0147: +
+L0148: +        log.debug("Go PA Response {}", paResponseString.getSecond());
+L0149: +
+L0150: +        if (Objects.isNull(paResponse) || CollectionUtils.isEmpty(paResponse.getProductBundles())) {
+L0151: +            log.error("Invalid Go PA response {}", paResponse);
+L0152: +            throw new RuntimeException("Internal server error");
+L0153: +        }
+L0154: +        return CommandResponse.builder()
+L0155: +                .productAmplifierResponse(paResponse)
+L0156: +                .typeToExperimentConfigResponse(abResponse)
+L0157: +                .typeToRefIdExperimentConfigResponse(fetchByExpTypeAndRefIdsRes)
+L0158: +                .build();
+L0159: +    }
+L0160: +
+L0161:      public CommandResponse resolveProductAmplifierCartResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+L0162:          return resolveProductAmplifierResponse(futuresData, PRODUCT_AMPLIFIER_PA_CART_COMMAND);
+L0163:      }
+
+[METHOD CONTEXT lines 130-132]
+    public CommandResponse resolveProductAmplifierCartResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+        return resolveProductAmplifierResponse(futuresData, PRODUCT_AMPLIFIER_PA_CART_COMMAND);
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 29-166 [truncated]]
+@Service
+@Slf4j
+public class ProductAggregatorFutureResolver extends FutureResolver {
+
+    public CommandResponse resolveProductAggregatorResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+        Pair<Integer, String> paResponseString = getOrDefaultEmptyPair(futuresData, PRODUCT_AGGREGATOR_COMMAND);
+        Pair<Integer, String> abResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_BULK_V2);
+        Pair<Integer, String> abRefIdResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_AND_REF_ID);
+
+
+        PAResponseForProductAggregation paResponse = CommonUtils.commandResponseHandler(paResponseString, PRODUCT_AGGREGATOR_TYPE_REFERENCE);
+        Map<String, ExperimentConfigResponse> abResponse = CommonUtils.silentCommandResponseHandler
+                (abResponseString, MAP_OF_EXP_TYPE_TO_CONFIG_REFERENCE, AB_EXPERIMENT_BY_TYPE_BULK_V2);
+        Map<String, ExperimentConfigResponse> fetchByExpTypeAndRefIdsRes = CommonUtils.silentCommandResponseHandler
+                (abRefIdResponseString, MAP_OF_REF_ID_TO_CONFIG_REFERENCE, AB_EXPERIMENT_BY_TYPE_AND_REF_ID);
+
+        log.debug("PA Response {}", paResponseString.getSecond());
+
+        if (Objects.isNull(paResponse) || Objects.isNull(paResponse.getData()) || Objects.isNull(paResponse.getData().getProductAggregation())) {
+            log.error("Invalid PA response {}", paResponse);
+            throw new RuntimeException("Internal server error");
+        }
+        if (Objects.nonNull(paResponse.getErrors()) && !paResponse.getErrors().isEmpty()) {
+            paResponse.getErrors().stream().filter(Objects::nonNull).forEach(e -> log.error(e.getMessage() + "\n" + e.getLocations()));
+        }
+        return CommandResponse.builder()
+                .productAggregationResponse(paResponse.getData().getProductAggregation())
+                .typeToExperimentConfigResponse(abResponse)
+                .typeToRefIdExperimentConfigResponse(fetchByExpTypeAndRefIdsRes)
+                .build();
+    }
+
+    public CommandResponse resolveProductAmplifierResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+        Pair<Integer, String> abResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_BULK_V2);
+        Pair<Integer, String> abRefIdResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_AND_REF_ID);
+        Pair<Integer, String> paResponseString = getOrDefaultEmptyPair(futuresData, PRODUCT_AMPLIFIER_PA_COMMAND);
+        Pair<Integer, String> sessionManagerResponseString = getOrDefaultEmptyPair(futuresData, UPDATE_SESSION);
+
+        ProductAggregationResponse paResponse = CommonUtils.commandResponseHandler(
+                paResponseString,
+                PRODUCT_AMPLIFIER_TYPE_REFERENCE,
+                PRODUCT_AMPLIFIER_PA_COMMAND);
+        Map<String, ExperimentConfigResponse> abResponse = CommonUtils.silentCommandResponseHandler(
+                abResponseString,
+                MAP_OF_EXP_TYPE_TO_CONFIG_REFERENCE,
+                AB_EXPERIMENT_BY_TYPE_BULK_V2
+        );
+        Map<String, ExperimentConfigResponse> fetchByExpTypeAndRefIdsRes = CommonUtils.silentCommandResponseHandler(
+                abRefIdResponseString,
+                MAP_OF_REF_ID_TO_CONFIG_REFERENCE,
+                AB_EXPERIMENT_BY_TYPE_AND_REF_ID
+        );
+        UpdateSessionResponseBody sessionManagerResponse = CommonUtils.commandResponseHandler(
+                sessionManagerResponseString, UPDATE_SESSION_RESPONSE_TYPE_REFERENCE);
+
+        log.debug("PA Response {}", paResponseString.getSecond());
+
+        if (Objects.isNull(paResponse) || CollectionUtils.isEmpty(paResponse.getProductBundles())) {
+            log.error("Invalid PA response {}", paResponse);
+            throw new RuntimeException("Internal server error");
+        }
+        return CommandResponse.builder()
+                .productAmplifierResponse(paResponse)
+                .typeToExperimentConfigResponse(abResponse)
+                .typeToRefIdExperimentConfigResponse(fetchByExpTypeAndRefIdsRes)
+                .build();
+    }
+
+    public CommandResponse resolveProductAmplifierResponseForPAWrapper(FuturesData futuresData, CompletableFuture<ProductAggregationResponse> paResponseFuture) throws ExecutionException, InterruptedException, IOException {
+        Pair<Integer, String> abResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_BULK_V2);
+        Pair<Integer, String> abRefIdResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_AND_REF_ID);
+        Pair<Integer, String> sessionManagerResponseString = getOrDefaultEmptyPair(futuresData, UPDATE_SESSION);
+
+        ProductAggregationResponse paResponse= paResponseFuture.get();
+
+        Map<String, ExperimentConfigResponse> abResponse = CommonUtils.silentCommandResponseHandler(
+                abResponseString,
+                MAP_OF_EXP_TYPE_TO_CONFIG_REFERENCE,
+                AB_EXPERIMENT_BY_TYPE_BULK_V2
+        );
+        Map<String, ExperimentConfigResponse> fetchByExpTypeAndRefIdsRes = CommonUtils.silentCommandResponseHandler(
+                abRefIdResponseString,
+                MAP_OF_REF_ID_TO_CONFIG_REFERENCE,
+                AB_EXPERIMENT_BY_TYPE_AND_REF_ID
+        );
+        UpdateSessionResponseBody sessionManagerResponse = CommonUtils.commandResponseHandler(
+                sessionManagerResponseString, UPDATE_SESSION_RESPONSE_TYPE_REFERENCE);
+
+        if (Objects.isNull(paResponse) || CollectionUtils.isEmpty(paResponse.getProductBundles())) {
+            log.error("Invalid PA response {}", paResponse);
+            throw new RuntimeException("Internal server error");
+        }
+        return CommandResponse.builder()
+                .productAmplifierResponse(paResponse)
+                .typeToExperimentConfigResponse(abResponse)
+                .typeToRefIdExperimentConfigResponse(fetchByExpTypeAndRefIdsRes)
+                .build();
+    }
+
+
+
+    public CommandResponse resolveProductAmplifierCartResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+        return resolveProductAmplifierResponse(futuresData, PRODUCT_AMPLIFIER_PA_CART_COMMAND);
+    }
+
+    public CommandResponse resolveProductAmplifierVariationResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+        return resolveProductAmplifierResponse(futuresData, PRODUCT_AMPLIFIER_PA_COMMAND);
+    }
+
+    public CommandResponse resolveProductAmplifierResponse(FuturesData futuresData, String paCommandName) throws IOException, ExecutionException, InterruptedException {
+        Pair<Integer, String> paResponseString = getOrDefaultEmptyPair(futuresData, paCommandName);
+        Pair<Integer, String> abResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_BULK_V2);
+
+        ProductAggregationResponse paResponse = CommonUtils.commandResponseHandler(
+                paResponseString,
+                PRODUCT_AMPLIFIER_TYPE_REFERENCE,
+                paCommandName);
+
+        Map<String, ExperimentConfigResponse> abResponse = CommonUtils.silentCommandResponseHandler(
+                abResponseString,
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 134-136]
+    public CommandResponse resolveProductAmplifierVariationResponse(FuturesData futuresData) throws ExecutionException, InterruptedException, IOException {
+        return resolveProductAmplifierResponse(futuresData, PRODUCT_AMPLIFIER_PA_COMMAND);
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 138-163]
+    public CommandResponse resolveProductAmplifierResponse(FuturesData futuresData, String paCommandName) throws IOException, ExecutionException, InterruptedException {
+        Pair<Integer, String> paResponseString = getOrDefaultEmptyPair(futuresData, paCommandName);
+        Pair<Integer, String> abResponseString = getOrDefaultEmptyPair(futuresData, AB_EXPERIMENT_BY_TYPE_BULK_V2);
+
+        ProductAggregationResponse paResponse = CommonUtils.commandResponseHandler(
+                paResponseString,
+                PRODUCT_AMPLIFIER_TYPE_REFERENCE,
+                paCommandName);
+
+        Map<String, ExperimentConfigResponse> abResponse = CommonUtils.silentCommandResponseHandler(
+                abResponseString,
+                MAP_OF_EXP_TYPE_TO_CONFIG_REFERENCE,
+                AB_EXPERIMENT_BY_TYPE_BULK_V2
+        );
+
+        log.debug("PA Response {}", paResponseString.getSecond());
+
+        if (Objects.isNull(paResponse) || CollectionUtils.isEmpty(paResponse.getProductBundles())) {
+            log.error("Invalid PA response {}", paResponse);
+            throw new RuntimeException("Internal server error");
+        }
+        return CommandResponse.builder()
+                .productAmplifierResponse(paResponse)
+                .typeToExperimentConfigResponse(abResponse)
+                .build();
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 155-158]
+        if (Objects.isNull(paResponse) || CollectionUtils.isEmpty(paResponse.getProductBundles())) {
+            log.error("Invalid PA response {}", paResponse);
+            throw new RuntimeException("Internal server error");
+        }
+[END METHOD CONTEXT]
+
+### store-front-service/src/main/java/com/meesho/aggregator/service/callmanager/impl/CompareProductAmplifyrResponses.java (added, +96/-0)
+@@ -0,0 +1,96 @@
+L0001: +package com.meesho.aggregator.service.callmanager.impl;
+L0002: +
+L0003: +import com.meesho.productamplifyr.client.models.ProductBundle;
+L0004: +import com.meesho.productamplifyr.client.response.ProductAggregationResponse;
+L0005: +import com.meesho.storefront.config.metrics.MetricsManager;
+L0006: +import lombok.extern.slf4j.Slf4j;
+L0007: +import org.springframework.stereotype.Service;
+L0008: +import org.springframework.util.CollectionUtils;
+L0009: +
+L0010: +import java.util.List;
+L0011: +import java.util.Objects;
+L0012: +
+L0013: +@Slf4j
+L0014: +@Service
+L0015: +public class CompareProductAmplifyrResponses {
+L0016: +
+L0017: +    public boolean sameResponse(ProductAggregationResponse javaResponse, ProductAggregationResponse goResponse) {
+L0018: +        MetricsManager.increment("PA_GO_COMPARING_RESPONSE");
+L0019: +        try {
+L0020: +            if (javaResponse == null && goResponse == null) {
+L0021: +                log.error("Getting null response from both Java PA and Go PA");
+L0022: +                return true;
+L0023: +            }
+L0024: +            if (javaResponse == null || goResponse == null) {
+L0025: +                log.error("Getting null response from either Java PA or Go PA: javaNull={}, goNull={}",
+L0026: +                        javaResponse == null, goResponse == null);
+L0027: +                MetricsManager.increment("PA_GO_NULL_RESPONSE");
+L0028: +                return false;
+L0029: +            }
+L0030: +            return compareProductBundles(javaResponse.getProductBundles(), goResponse.getProductBundles());
+L0031: +        } catch (Exception e) {
+L0032: +            log.error("Error comparing Java PA and Go PA responses: exception={}", e.getMessage(), e);
+L0033: +            MetricsManager.increment("PA_GO_ERROR_COMPARING_RESPONSE");
+L0034: +            return false;
+L0035: +        }
+L0036: +    }
+L0037: +
+L0038: +    private boolean compareProductBundles(List<ProductBundle> javaBundles, List<ProductBundle> goBundles) {
+L0039: +        if (CollectionUtils.isEmpty(javaBundles) && CollectionUtils.isEmpty(goBundles)) {
+L0040: +            return true;
+L0041: +        }
+L0042: +        if (CollectionUtils.isEmpty(javaBundles) || CollectionUtils.isEmpty(goBundles)) {
+L0043: +            log.error("Mismatch in product bundles: one response has empty bundles. javaSize={}, goSize={}",
+L0044: +                    javaBundles == null ? 0 : javaBundles.size(),
+L0045: +                    goBundles == null ? 0 : goBundles.size());
+L0046: +            MetricsManager.increment("PA_GO_DIFF_BUNDLE_EMPTY");
+L0047: +            return false;
+L0048: +        }
+L0049: +        if (javaBundles.size() != goBundles.size()) {
+L0050: +            log.error("Different product bundle sizes: javaSize={}, goSize={}", javaBundles.size(), goBundles.size());
+L0051: +            MetricsManager.increment("PA_GO_DIFF_BUNDLE_SIZE");
+L0052: +            return false;
+L0053: +        }
+L0054: +        for (int i = 0; i < javaBundles.size(); i++) {
+L0055: +            ProductBundle javaBundle = javaBundles.get(i);
+L0056: +            ProductBundle goBundle = goBundles.get(i);
+L0057: +
+L0058: +            if (javaBundle == null || goBundle == null) {
+L0059: +                log.error("Null product bundle at index {}: javaNull={}, goNull={}", i, javaBundle == null, goBundle == null);
+L0060: +                MetricsManager.increment("PA_GO_DIFF_NULL_BUNDLE");
+L0061: +                return false;
+L0062: +            }
+L0063: +            if (!compareProductIds(i, javaBundle, goBundle)) {
+L0064: +                return false;
+L0065: +            }
+L0066: +            if (!compareCatalogIds(i, javaBundle, goBundle)) {
+L0067: +                return false;
+L0068: +            }
+L0069: +        }
+L0070: +        return true;
+L0071: +    }
+L0072: +
+L0073: +    private boolean compareProductIds(int index, ProductBundle javaBundle, ProductBundle goBundle) {
+L0074: +        Object javaProductId = javaBundle.getProduct() != null ? javaBundle.getProduct().getId() : null;
+L0075: +        Object goProductId = goBundle.getProduct() != null ? goBundle.getProduct().getId() : null;
+L0076: +        if (!Objects.equals(javaProductId, goProductId)) {
+L0077: +            log.error("Different product IDs at bundle index {}: javaProductId={}, goProductId={}",
+L0078: +                    index, javaProductId, goProductId);
+L0079: +            MetricsManager.increment("PA_GO_DIFF_PRODUCT_ID");
+L0080: +            return false;
+L0081: +        }
+L0082: +        return true;
+L0083: +    }
+L0084: +
+L0085: +    private boolean compareCatalogIds(int index, ProductBundle javaBundle, ProductBundle goBundle) {
+L0086: +        Object javaCatalogId = javaBundle.getCatalog() != null ? javaBundle.getCatalog().getId() : null;
+L0087: +        Object goCatalogId = goBundle.getCatalog() != null ? goBundle.getCatalog().getId() : null;
+L0088: +        if (!Objects.equals(javaCatalogId, goCatalogId)) {
+L0089: +            log.error("Different catalog IDs at bundle index {}: javaCatalogId={}, goCatalogId={}",
+L0090: +                    index, javaCatalogId, goCatalogId);
+L0091: +            MetricsManager.increment("PA_GO_DIFF_CATALOG_ID");
+L0092: +            return false;
+L0093: +        }
+L0094: +        return true;
+L0095: +    }
+L0096: +}
+
+### store-front-service/src/main/java/com/meesho/aggregator/service/callmanager/impl/ProductAggregatorDownStreamCallManager.java (modified, +65/-8)
+@@ -7,32 +7,53 @@
+L0007:  import com.meesho.aggregator.service.commands.model.CommandRequest;
+L0008:  import com.meesho.aggregator.service.commands.model.CommandResponse;
+L0009:  import com.meesho.productamplifyr.client.response.ProductAggregationResponse;
+L0010: +import com.meesho.storefront.config.metrics.MetricsManager;
+L0011:  import com.meesho.storefront.data.domainModels.content.IntentTileIdFetchResponse;
+L0012:  import com.meesho.storefront.data.domainModels.content.ThymeleafTemplateResponse;
+L0013:  import com.meesho.storefront.data.domainModels.dependencydata.ProductAggregationDependencyData;
+L0014:  import com.meesho.storefront.data.domainModels.misc.CommandsData;
+L0015:  import com.meesho.storefront.data.domainModels.misc.FuturesData;
+L0016:  import com.meesho.storefront.service.callmanager.DownStreamCallManager;
+L----: -import lombok.RequiredArgsConstructor;
+L0017:  import lombok.extern.slf4j.Slf4j;
+L0018:  import org.apache.commons.lang.BooleanUtils;
+L0019:  import org.springframework.beans.factory.annotation.Autowired;
+L0020: +import org.springframework.beans.factory.annotation.Qualifier;
+L0021:  import org.springframework.stereotype.Service;
+L0022:  
+L0023:  import java.io.IOException;
+L0024:  import java.util.List;
+L0025:  import java.util.concurrent.CompletableFuture;
+L0026:  import java.util.concurrent.ExecutionException;
+L0027: +import java.util.concurrent.ExecutorService;
+L0028: +
+L0029: +import static com.meesho.storefront.data.constants.CommonConstants.ApplicationBeanNames.PA_GO_SAMPLING_EXECUTOR;
+L0030:  
+L0031:  @Slf4j
+L0032:  @Service
+L----: -@RequiredArgsConstructor(onConstructor_ = @Autowired)
+L0033:  public class ProductAggregatorDownStreamCallManager extends DownStreamCallManager<ProductAggregationDependencyData, CommandRequest> {
+L0034:  
+L0035:      private final ProductAggregatorFutureResolver resolver;
+L0036:      private final ProductAggregatorCommandProvider provider;
+L0037:      private final IntentModalDataCommandProvider intentModalDataCommandProvider;
+L0038:      private final IntentModalDataFutureResolver intentModalDataFutureResolver;
+L0039: +    private final CompareProductAmplifyrResponses compareProductAmplifyrResponses;
+L0040: +    private final ExecutorService paGoSamplingExecutor;
+L0041: +
+L0042: +    @Autowired
+L0043: +    public ProductAggregatorDownStreamCallManager(
+L0044: +            ProductAggregatorFutureResolver resolver,
+L0045: +            ProductAggregatorCommandProvider provider,
+L0046: +            IntentModalDataCommandProvider intentModalDataCommandProvider,
+L0047: +            IntentModalDataFutureResolver intentModalDataFutureResolver,
+L0048: +            CompareProductAmplifyrResponses compareProductAmplifyrResponses,
+L0049: +            @Qualifier(PA_GO_SAMPLING_EXECUTOR) ExecutorService paGoSamplingExecutor) {
+L0050: +        this.resolver = resolver;
+L0051: +        this.provider = provider;
+L0052: +        this.intentModalDataCommandProvider = intentModalDataCommandProvider;
+L0053: +        this.intentModalDataFutureResolver = intentModalDataFutureResolver;
+L0054: +        this.compareProductAmplifyrResponses = compareProductAmplifyrResponses;
+L0055: +        this.paGoSamplingExecutor = paGoSamplingExecutor;
+L0056: +    }
+L0057:  
+L0058:      @Override
+L0059:      public ProductAggregationDependencyData getData(CommandRequest commandRequest) throws InterruptedException, ExecutionException, IOException {
+@@ -48,14 +69,50 @@ public ProductAggregationDependencyData getData(CommandRequest commandRequest) t
+L0069:      }
+L0070:  
+L0071:      public ProductAggregationDependencyData getDataFromProductAmplifier(CommandRequest commandRequest) throws IOException, ExecutionException, InterruptedException {
+L0072: +        boolean divertToGo = commandRequest.getRequestMeta() != null && commandRequest.getRequestMeta().isDivertToGoProductAmplifier();
+L0073: +        boolean isSampling = commandRequest.getRequestMeta() != null && commandRequest.getRequestMeta().isSamplingEnabledForProductAmplifier();
+L0074: +
+L0075:          CommandsData commandsData = provider.provideProductAggregatorCommandData(commandRequest);
+L0076:          FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+L----: -        CommandResponse commandResponse = resolver.resolveProductAmplifierResponse(futuresData);
+L----: -        return ProductAggregationDependencyData.builder()
+L----: -                .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+L----: -                .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+L----: -                .refIdToExperimentConfigResponse(commandResponse.getTypeToRefIdExperimentConfigResponse())
+L----: -                .build();
+L0077: +
+L0078: +        if (isSampling) {
+L0079: +            CommandResponse javaCommandResponse = resolver.resolveProductAmplifierResponse(futuresData);
+L0080: +            ProductAggregationResponse javaResponse = javaCommandResponse.getProductAmplifierResponse();
+L0081: +            CompletableFuture.runAsync(() -> {
+L0082: +                try {
+L0083: +                    ProductAggregationResponse goResponse = resolver.resolveGoProductAmplifierResponse(futuresData);
+L0084: +                    boolean same = compareProductAmplifyrResponses.sameResponse(javaResponse, goResponse);
+L0085: +                    if (same) {
+L0086: +                        MetricsManager.increment("PA_GO_SAME_RESPONSE");
+L0087: +                    } else {
+L0088: +                        log.error("Getting diff in responses for product amplifier go sampling");
+L0089: +                        MetricsManager.increment("PA_GO_NOT_SAME_RESPONSE");
+L0090: +                    }
+L0091: +                } catch (Exception e) {
+L0092: +                    log.error("Error resolving Go PA response during sampling. Skipping comparison. error={}", e.getMessage());
+L0093: +                    MetricsManager.increment("PA_GO_ERROR_GETTING_GO_RESPONSE");
+L0094: +                }
+L0095: +            }, paGoSamplingExecutor);
+L0096: +            return ProductAggregationDependencyData.builder()
+L0097: +                    .productAmplifierResponse(javaResponse)
+L0098: +                    .typeToExperimentConfigResponse(javaCommandResponse.getTypeToExperimentConfigResponse())
+L0099: +                    .refIdToExperimentConfigResponse(javaCommandResponse.getTypeToRefIdExperimentConfigResponse())
+L0100: +                    .build();
+L0101: +        } else if (divertToGo) {
+L0102: +            CommandResponse commandResponse = resolver.resolveGoProductAmplifierFullResponse(futuresData);
+L0103: +            return ProductAggregationDependencyData.builder()
+L0104: +                    .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+L0105: +                    .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+L0106: +                    .refIdToExperimentConfigResponse(commandResponse.getTypeToRefIdExperimentConfigResponse())
+L0107: +                    .build();
+L0108: +        } else {
+L0109: +            CommandResponse commandResponse = resolver.resolveProductAmplifierResponse(futuresData);
+L0110: +            return ProductAggregationDependencyData.builder()
+L0111: +                    .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+L0112: +                    .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+L0113: +                    .refIdToExperimentConfigResponse(commandResponse.getTypeToRefIdExperimentConfigResponse())
+L0114: +                    .build();
+L0115: +        }
+L0116:      }
+L0117:  
+L0118:      public ProductAggregationDependencyData getDataFromProductAmplifierForPAWrapper(CommandRequest commandRequest, CompletableFuture<ProductAggregationResponse> paResponseFuture) throws IOException, ExecutionException, InterruptedException {
+
+[METHOD CONTEXT lines 37-48]
+    @Override
+    public ProductAggregationDependencyData getData(CommandRequest commandRequest) throws InterruptedException, ExecutionException, IOException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandData(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAggregatorResponse(futuresData);
+        return ProductAggregationDependencyData.builder()
+                .productAggregationResponse(commandResponse.getProductAggregationResponse())
+                .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+                .refIdToExperimentConfigResponse(commandResponse.getTypeToRefIdExperimentConfigResponse())
+                .build();
+
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 27-116]
+@Slf4j
+@Service
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
+public class ProductAggregatorDownStreamCallManager extends DownStreamCallManager<ProductAggregationDependencyData, CommandRequest> {
+
+    private final ProductAggregatorFutureResolver resolver;
+    private final ProductAggregatorCommandProvider provider;
+    private final IntentModalDataCommandProvider intentModalDataCommandProvider;
+    private final IntentModalDataFutureResolver intentModalDataFutureResolver;
+
+    @Override
+    public ProductAggregationDependencyData getData(CommandRequest commandRequest) throws InterruptedException, ExecutionException, IOException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandData(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAggregatorResponse(futuresData);
+        return ProductAggregationDependencyData.builder()
+                .productAggregationResponse(commandResponse.getProductAggregationResponse())
+                .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+                .refIdToExperimentConfigResponse(commandResponse.getTypeToRefIdExperimentConfigResponse())
+                .build();
+
+    }
+
+    public ProductAggregationDependencyData getDataFromProductAmplifier(CommandRequest commandRequest) throws IOException, ExecutionException, InterruptedException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandData(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAmplifierResponse(futuresData);
+        return ProductAggregationDependencyData.builder()
+                .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+                .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+                .refIdToExperimentConfigResponse(commandResponse.getTypeToRefIdExperimentConfigResponse())
+                .build();
+    }
+
+    public ProductAggregationDependencyData getDataFromProductAmplifierForPAWrapper(CommandRequest commandRequest, CompletableFuture<ProductAggregationResponse> paResponseFuture) throws IOException, ExecutionException, InterruptedException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandDataPAWrapper(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAmplifierResponseForPAWrapper(futuresData, paResponseFuture);
+        return ProductAggregationDependencyData.builder()
+                .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+                .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+                .refIdToExperimentConfigResponse(commandResponse.getTypeToRefIdExperimentConfigResponse())
+                .build();
+    }
+
+    public ProductAggregationDependencyData getDataFromProductAmplifierCart(CommandRequest commandRequest) throws IOException, ExecutionException, InterruptedException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandDataCart(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAmplifierCartResponse(futuresData);
+        return ProductAggregationDependencyData.builder()
+                .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+                .build();
+    }
+
+    public ProductAggregationDependencyData getDataFromProductAmplifierVariation(CommandRequest commandRequest) throws IOException, ExecutionException, InterruptedException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandDataVariation(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAmplifierVariationResponse(futuresData);
+        return ProductAggregationDependencyData.builder()
+                .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+                .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+                .build();
+    }
+
+    public IntentTileIdFetchResponse getIntentModelV2Data(Boolean intentModalV2, Integer sscatId) {
+        if(!BooleanUtils.isTrue(intentModalV2)) {
+            return null;
+        }
+        try {
+            CommandsData commandsData = intentModalDataCommandProvider.provideForIntentModalV2Data(sscatId);
+            FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+            return intentModalDataFutureResolver.provideForIntentModalV2Data(futuresData);
+        } catch (Exception e) {
+            log.error("Error in fetching intent modal data for sscatId: {}", sscatId, e);
+            return null;
+        }
+    }
+
+    public ThymeleafTemplateResponse getThymeleafTemplateData(List<Integer> templateIds) {
+        try {
+            CommandsData commandsData = intentModalDataCommandProvider.provideForThymeleafTemplate(templateIds);
+            FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+            return intentModalDataFutureResolver.provideForThymeleafTemplate(futuresData);
+        } catch (Exception e) {
+            log.error("Error in fetching thymeleaf template data for template_ids: {}", templateIds, e);
+            return null;
+        }
+    }
+
+}
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 50-59]
+    public ProductAggregationDependencyData getDataFromProductAmplifier(CommandRequest commandRequest) throws IOException, ExecutionException, InterruptedException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandData(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAmplifierResponse(futuresData);
+        return ProductAggregationDependencyData.builder()
+                .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+                .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+                .refIdToExperimentConfigResponse(commandResponse.getTypeToRefIdExperimentConfigResponse())
+                .build();
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 72-79]
+    public ProductAggregationDependencyData getDataFromProductAmplifierCart(CommandRequest commandRequest) throws IOException, ExecutionException, InterruptedException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandDataCart(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAmplifierCartResponse(futuresData);
+        return ProductAggregationDependencyData.builder()
+                .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+                .build();
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 81-89]
+    public ProductAggregationDependencyData getDataFromProductAmplifierVariation(CommandRequest commandRequest) throws IOException, ExecutionException, InterruptedException {
+        CommandsData commandsData = provider.provideProductAggregatorCommandDataVariation(commandRequest);
+        FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+        CommandResponse commandResponse = resolver.resolveProductAmplifierVariationResponse(futuresData);
+        return ProductAggregationDependencyData.builder()
+                .productAmplifierResponse(commandResponse.getProductAmplifierResponse())
+                .typeToExperimentConfigResponse(commandResponse.getTypeToExperimentConfigResponse())
+                .build();
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 91-103]
+    public IntentTileIdFetchResponse getIntentModelV2Data(Boolean intentModalV2, Integer sscatId) {
+        if(!BooleanUtils.isTrue(intentModalV2)) {
+            return null;
+        }
+        try {
+            CommandsData commandsData = intentModalDataCommandProvider.provideForIntentModalV2Data(sscatId);
+            FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+            return intentModalDataFutureResolver.provideForIntentModalV2Data(futuresData);
+        } catch (Exception e) {
+            log.error("Error in fetching intent modal data for sscatId: {}", sscatId, e);
+            return null;
+        }
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 91-94]
+    public IntentTileIdFetchResponse getIntentModelV2Data(Boolean intentModalV2, Integer sscatId) {
+        if(!BooleanUtils.isTrue(intentModalV2)) {
+            return null;
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 95-102]
+        try {
+            CommandsData commandsData = intentModalDataCommandProvider.provideForIntentModalV2Data(sscatId);
+            FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+            return intentModalDataFutureResolver.provideForIntentModalV2Data(futuresData);
+        } catch (Exception e) {
+            log.error("Error in fetching intent modal data for sscatId: {}", sscatId, e);
+            return null;
+        }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 105-114]
+    public ThymeleafTemplateResponse getThymeleafTemplateData(List<Integer> templateIds) {
+        try {
+            CommandsData commandsData = intentModalDataCommandProvider.provideForThymeleafTemplate(templateIds);
+            FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+            return intentModalDataFutureResolver.provideForThymeleafTemplate(futuresData);
+        } catch (Exception e) {
+            log.error("Error in fetching thymeleaf template data for template_ids: {}", templateIds, e);
+            return null;
+        }
+    }
+[END METHOD CONTEXT]
+
+[METHOD CONTEXT lines 105-113]
+    public ThymeleafTemplateResponse getThymeleafTemplateData(List<Integer> templateIds) {
+        try {
+            CommandsData commandsData = intentModalDataCommandProvider.provideForThymeleafTemplate(templateIds);
+            FuturesData futuresData = executeCommandAndGetFuturesData(commandsData);
+            return intentModalDataFutureResolver.provideForThymeleafTemplate(futuresData);
+        } catch (Exception e) {
+            log.error("Error in fetching thymeleaf template data for template_ids: {}", templateIds, e);
+            return null;
+        }
+[END METHOD CONTEXT]
+
+### store-front-service/src/main/java/com/meesho/aggregator/service/commands/model/CommandRequest.java (modified, +2/-0)
+@@ -25,5 +25,7 @@ public class CommandRequest {
+L0025:      @Data
+L0026:      public static class RequestMeta {
+L0027:          String requestContextForPA;
+L0028: +        boolean divertToGoProductAmplifier;
+L0029: +        boolean samplingEnabledForProductAmplifier;
+L0030:      }
+L0031:  }
+
+[METHOD CONTEXT lines 13-29]
+@Builder
+@Data
+public class CommandRequest {
+    private GraphQLReq paRequest;
+    private ABExperimentByTypeBulkV2CommandReq abExperimentRequest;
+    private ABExperimentByTypeAndRefIdRequest abExperimentByTypeAndRefIdRequest;
+    private ProductAggregationRequest productAmplifierRequest;
+    private UpdateSessionRequestDto<FeedSessionData> updateSessionRequest;
+    private UpdateSessionRequestDto<FeedSessionDataV2> updateSessionRequestV2;
+    private RequestMeta requestMeta;
+
+    @Builder
+    @Data
+    public static class RequestMeta {
+        String requestContextForPA;
+    }
+}
+[END METHOD CONTEXT]
+
+### store-front-service/src/main/java/com/meesho/aggregator/service/commands/productAggregatorCommand/ProductAmplifierGoCommand.java (added, +90/-0)
+@@ -0,0 +1,90 @@
+L0001: +package com.meesho.aggregator.service.commands.productAggregatorCommand;
+L0002: +
+L0003: +import com.meesho.productamplifyr.client.models.CustomHTTPStatusCode;
+L0004: +import com.meesho.productamplifyr.client.request.ProductAggregationRequest;
+L0005: +import com.meesho.storefront.config.ApplicationHttpClient;
+L0006: +import com.meesho.storefront.data.constants.CommonConstants;
+L0007: +import com.meesho.storefront.data.constants.HystrixCommandConstants;
+L0008: +import com.meesho.storefront.exception.NetworkCommunicationException;
+L0009: +import com.meesho.storefront.service.commands.BaseCommand;
+L0010: +import com.meesho.storefront.service.utils.Pair;
+L0011: +import com.meesho.storefront.service.utils.SFBeanUtil;
+L0012: +import com.netflix.hystrix.exception.HystrixRuntimeException;
+L0013: +import org.apache.logging.log4j.LogManager;
+L0014: +import org.apache.logging.log4j.Logger;
+L0015: +import org.springframework.http.MediaType;
+L0016: +
+L0017: +import java.util.Map;
+L0018: +
+L0019: +import static com.meesho.commons.enums.CommonConstants.MEESHO_USER_ID;
+L0020: +import static com.meesho.storefront.data.constants.CommonConstants.HeaderKeys.MEESHO_REQUEST_CLIENT_ID;
+L0021: +import static com.meesho.storefront.data.constants.CommonConstants.HeaderKeys.MEESHO_REQUEST_CONTEXT;
+L0022: +import static com.meesho.storefront.data.constants.HystrixCommandConstants.APIRoutes.GET_PRODUCT_AMPLIFIER_PA_PATH;
+L0023: +import static com.meesho.storefront.data.constants.HystrixCommandConstants.ServiceHttpPoolBeanNames.PRODUCT_AMPLIFIER_GO_HTTP_CONNECTION_POOL;
+L0024: +import static com.meesho.storefront.data.constants.HystrixCommandConstants.SetterBeans.PRODUCT_AMPLIFIER_GO_COMMAND_SETTER_BEAN;
+L0025: +
+L0026: +public class ProductAmplifierGoCommand extends BaseCommand<Pair<Integer, String>> {
+L0027: +
+L0028: +    public static final Logger LOGGER = LogManager.getLogger(ProductAmplifierGoCommand.class);
+L0029: +    protected final ApplicationHttpClient httpClient = (ApplicationHttpClient) SFBeanUtil.getBean(PRODUCT_AMPLIFIER_GO_HTTP_CONNECTION_POOL);
+L0030: +    private static final String NETWORK_EXCEPTION_LOG = "Network exception encountered in command PRODUCT_AMPLIFIER_GO_ProductAggregatorCommand";
+L0031: +
+L0032: +    ProductAggregationRequest request;
+L0033: +    String requestContext;
+L0034: +    Pair<Integer, String> response;
+L0035: +
+L0036: +    public ProductAmplifierGoCommand(ProductAggregationRequest paRequest, String requestContext) {
+L0037: +        super(PRODUCT_AMPLIFIER_GO_COMMAND_SETTER_BEAN);
+L0038: +        this.request = paRequest;
+L0039: +        this.requestContext = requestContext;
+L0040: +    }
+L0041: +
+L0042: +    @Override
+L0043: +    protected Pair<Integer, String> run() throws Exception {
+L0044: +        String requestString = objectMapper.writeValueAsString(request);
+L0045: +        Map<String, String> headersMap = createHeader();
+L0046: +        try {
+L0047: +            String url = environmentVariables.get(HystrixCommandConstants.UrlKeys.PRODUCT_AMPLIFIER_GO_BASE_URL).concat(GET_PRODUCT_AMPLIFIER_PA_PATH);
+L0048: +            response = httpClient.executeHttpPostRequest(url, headersMap, requestString, MediaType.APPLICATION_JSON_VALUE);
+L0049: +            return processResponse(response, requestString);
+L0050: +        } catch (NetworkCommunicationException e) {
+L0051: +            throw new HystrixRuntimeException(
+L0052: +                    HystrixRuntimeException.FailureType.COMMAND_EXCEPTION,
+L0053: +                    ProductAmplifierGoCommand.class,
+L0054: +                    NETWORK_EXCEPTION_LOG,
+L0055: +                    e,
+L0056: +                    null);
+L0057: +        }
+L0058: +    }
+L0059: +
+L0060: +    @Override
+L0061: +    protected Pair<Integer, String> getFallback() {
+L0062: +        if (response != null && response.getFirst() == CustomHTTPStatusCode.STATUS_520.getStatus()) {
+L0063: +            LOGGER.error("Product Amplifier Go downstream failure. Skipping fallback.");
+L0064: +            return getDefaultISEResponse();
+L0065: +        }
+L0066: +        return getDefaultISEResponse();
+L0067: +    }
+L0068: +
+L0069: +    @Override
+L0070: +    protected Map<String, String> createHeader() {
+L0071: +        Map<String, String> headersMap = getDefaultHeaders();
+L0072: +        headersMap.put("Content-Type", "application/json");
+L0073: +        headersMap.put(MEESHO_REQUEST_CLIENT_ID, CommonConstants.requestClientId);
+L0074: +        headersMap.put(MEESHO_REQUEST_CONTEXT, requestContext);
+L0075: +        if (!headersMap.containsKey(MEESHO_USER_ID)) {
+L0076: +            headersMap.put(MEESHO_USER_ID, "-1");
+L0077: +        }
+L0078: +        return headersMap;
+L0079: +    }
+L0080: +
+L0081: +    @Override
+L0082: +    public String getCommandName() {
+L0083: +        return HystrixCommandConstants.CommandKeys.ProductAmplifier.PRODUCT_AMPLIFIER_GO_PA_COMMAND;
+L0084: +    }
+L0085: +
+L0086: +    @Override
+L0087: +    protected Logger getLogger() {
+L0088: +        return LOGGER;
+L0089: +    }
+L0090: +}
+
+### store-front-service/src/main/java/com/meesho/storefront/config/ApplicationExecutorConfig.java (modified, +6/-3)
+@@ -49,7 +49,10 @@ public ExecutorService getWAExecutor(@Value("${sf.thread-pool.widget-aggregator.
+L0049:          return executorService;
+L0050:      }
+L0051:  
+L----: -
+L----: -
+L----: -
+L0052: +    @Bean(name = PA_GO_SAMPLING_EXECUTOR)
+L0053: +    public ExecutorService getPAGoSamplingExecutor(@Value("${sf.thread-pool.pa-go-sampling.size}") Integer count) {
+L0054: +        ExecutorService executorService = Executors.newFixedThreadPool(count);
+L0055: +        registry.register(executorService, PA_GO_SAMPLING_EXECUTOR);
+L0056: +        return executorService;
+L0057: +    }
+L0058:  }
+
+[METHOD CONTEXT lines 14-55]
+@Configuration
+public class ApplicationExecutorConfig {
+
+    private MonitorRegistry registry;
+
+    @Autowired
+    public ApplicationExecutorConfig(MonitorRegistry registry) {
+        this.registry = registry;
+    }
+
+    @Bean(name = EXECUTOR)
+    public ExecutorService getExecutor(@Value("${sf.thread-pool.hangout.size}") Integer count) {
+        ExecutorService executorService = Executors.newFixedThreadPool(count);
+        registry.register(executorService, EXECUTOR);
+        return executorService;
+    }
+
+    @Bean(name = PRODUCT_AGGREGATOR_EXECUTOR)
+    public ExecutorService getPAExecutor(@Value("${sf.thread-pool.product-aggregator.size}") Integer count) {
+        ExecutorService executorService = Executors.newFixedThreadPool(count);
+        registry.register(executorService, PRODUCT_AGGREGATOR_EXECUTOR);
+        return executorService;
+    }
+
+    @Bean(name = AFFILIATE_EXECUTOR)
+    public ExecutorService getAffiliateExecutor(@Value("${sf.thread-pool.affiliate.size}") Integer count) {
+        ExecutorService executorService = Executors.newFixedThreadPool(count);
+        registry.register(executorService, AFFILIATE_EXECUTOR);
+        return executorService;
+    }
+
+    @Bean(name = WIDGET_AGGREGATOR_EXECUTOR)
+    public ExecutorService getWAExecutor(@Value("${sf.thread-pool.widget-aggregator.size}") Integer count) {
+        ExecutorService executorService = Executors.newFixedThreadPool(count);
+        registry.register(executorService, WIDGET_AGGREGATOR_EXECUTOR);
+        return executorService;
+    }
+
+
+
+
+}
+[END METHOD CONTEXT]
+
+### store-front-service/src/main/java/com/meesho/storefront/config/hystrix/ServiceHttpPoolBeans.java (modified, +6/-0)
+@@ -72,6 +72,7 @@ public class ServiceHttpPoolBeans {
+L0072:      private final AddressHttpPoolConfig addressHttpPoolConfig;
+L0073:      private final PAHttpPoolConfig paHttpPoolConfig;
+L0074:      private final ProductAmplifierHttpPoolConfig productAmplifierHttpPoolConfig;
+L0075: +    private final ProductAmplifierGoHttpPoolConfig productAmplifierGoHttpPoolConfig;
+L0076:      private final ProductAmplifierCartHttpPoolConfig productAmplifierCartHttpPoolConfig;
+L0077:      private final LoyaltyEngineHttpPoolConfig loyaltyEngineHttpPoolConfig;
+L0078:      private final WatcherHttpPoolConfig watcherHttpPoolConfig;
+@@ -317,6 +318,11 @@ public ApplicationHttpClient getProductAmplifierHttpPool() {
+L0318:          return new ApplicationHttpClient(getHttpClientFactory(productAmplifierHttpPoolConfig));
+L0319:      }
+L0320:  
+L0321: +    @Bean(PRODUCT_AMPLIFIER_GO_HTTP_CONNECTION_POOL)
+L0322: +    public ApplicationHttpClient getProductAmplifierGoHttpPool() {
+L0323: +        return new ApplicationHttpClient(getHttpClientFactory(productAmplifierGoHttpPoolConfig));
+L0324: +    }
+L0325: +
+L0326:      @Bean(PRODUCT_AMPLIFIER_CART_HTTP_CONNECTION_POOL)
+L0327:      public ApplicationHttpClient getProductAmplifierCartHttpPool() {
+L0328:          return new ApplicationHttpClient(getHttpClientFactory(productAmplifierCartHttpPoolConfig));
+
+### store-front-service/src/main/java/com/meesho/storefront/config/hystrix/httpConfigs/ProductAmplifierGoHttpPoolConfig.java (added, +12/-0)
+@@ -0,0 +1,12 @@
+L0001: +package com.meesho.storefront.config.hystrix.httpConfigs;
+L0002: +
+L0003: +import lombok.Data;
+L0004: +import org.springframework.boot.context.properties.ConfigurationProperties;
+L0005: +import org.springframework.context.annotation.Configuration;
+L0006: +
+L0007: +
+L0008: +@Data
+L0009: +@ConfigurationProperties(prefix = "sf.http.pool.product-amplifier-go")
+L0010: +@Configuration
+L0011: +public class ProductAmplifierGoHttpPoolConfig extends BaseHttpPoolConfig {
+L0012: +}
+
+### store-front-service/src/main/java/com/meesho/storefront/config/hystrix/serviceConfigs/ProductAmplifierGoConfig.java (added, +33/-0)
+@@ -0,0 +1,33 @@
+L0001: +package com.meesho.storefront.config.hystrix.serviceConfigs;
+L0002: +
+L0003: +import com.netflix.hystrix.HystrixCommandProperties;
+L0004: +import lombok.Data;
+L0005: +import org.springframework.boot.context.properties.ConfigurationProperties;
+L0006: +import org.springframework.context.annotation.Configuration;
+L0007: +
+L0008: +
+L0009: +@Data
+L0010: +@ConfigurationProperties(prefix = "hystrix.product-amplifier-go")
+L0011: +@Configuration
+L0012: +public class ProductAmplifierGoConfig implements ServiceConfig {
+L0013: +    private HystrixCommandProperties.ExecutionIsolationStrategy executionIsolationStrategy = HystrixCommandProperties.ExecutionIsolationStrategy.THREAD;
+L0014: +    private Boolean executionTimeoutEnabled;
+L0015: +    private Integer executionTimeoutInMilliseconds;
+L0016: +
+L0017: +    private Boolean fallbackEnabled;
+L0018: +    private Integer fallbackIsolationSemaphoreMaxConcurrentRequests;
+L0019: +
+L0020: +    private Boolean circuitBreakerEnabled;
+L0021: +    private Integer circuitBreakerRequestVolumeThreshold;
+L0022: +    private Integer circuitBreakerSleepWindowInMilliseconds;
+L0023: +    private Integer circuitBreakerErrorThresholdPercentage;
+L0024: +    private Boolean circuitBreakerForceOpen;
+L0025: +    private Boolean circuitBreakerForceClosed;
+L0026: +
+L0027: +    private Integer threadPoolCoreSize;
+L0028: +    private Integer threadPoolMaximumSize;
+L0029: +    private Integer threadPoolMaxQueueSize;
+L0030: +    private Integer threadPoolQueueSizeRejectionThreshold;
+L0031: +    private Integer threadPoolKeepAliveTimeMinutes;
+L0032: +    private Boolean threadPoolAllowMaximumSizeToDivergeFromCoreSize;
+L0033: +}
+
+### store-front-service/src/main/java/com/meesho/storefront/config/hystrix/setterBeans/ProductAmplifierSetterBeans.java (modified, +13/-0)
+@@ -3,6 +3,7 @@
+L0003:  import com.meesho.storefront.config.hystrix.SetterFactory;
+L0004:  import com.meesho.storefront.config.hystrix.serviceConfigs.DefaultConfig;
+L0005:  import com.meesho.storefront.config.hystrix.serviceConfigs.ProductAmplifierConfig;
+L0006: +import com.meesho.storefront.config.hystrix.serviceConfigs.ProductAmplifierGoConfig;
+L0007:  import com.meesho.storefront.config.hystrix.serviceConfigs.fallbacks.ProductAmplifierFallbackConfig;
+L0008:  import com.meesho.storefront.data.constants.HystrixCommandConstants;
+L0009:  import com.netflix.hystrix.HystrixCommand;
+@@ -12,13 +13,15 @@
+L0013:  import org.springframework.context.annotation.Configuration;
+L0014:  
+L0015:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.SetterBeans.PRODUCT_AMPLIFIER_COMMAND_SETTER_BEAN;
+L0016: +import static com.meesho.storefront.data.constants.HystrixCommandConstants.SetterBeans.PRODUCT_AMPLIFIER_GO_COMMAND_SETTER_BEAN;
+L0017:  import static com.meesho.storefront.data.constants.HystrixCommandConstants.SetterBeans.PRODUCT_AMPLIFIER_FALLBACK_COMMAND_SETTER_BEAN;
+L0018:  
+L0019:  @Configuration
+L0020:  @RequiredArgsConstructor(onConstructor_ = @Autowired)
+L0021:  public class ProductAmplifierSetterBeans {
+L0022:  
+L0023:      private final ProductAmplifierConfig productAmplifierConfig;
+L0024: +    private final ProductAmplifierGoConfig productAmplifierGoConfig;
+L0025:      private final ProductAmplifierFallbackConfig productAmplifierFallbackConfig;
+L0026:      private final DefaultConfig defaultConfig;
+L0027:  
+@@ -32,6 +35,16 @@ public HystrixCommand.Setter getPACommandSetter() {
+L0035:          );
+L0036:      }
+L0037:  
+L0038: +    @Bean(PRODUCT_AMPLIFIER_GO_COMMAND_SETTER_BEAN)
+L0039: +    public HystrixCommand.Setter getPAGoCommandSetter() {
+L0040: +        return SetterFactory.getSetter(
+L0041: +                HystrixCommandConstants.CommandKeys.ProductAmplifier.PRODUCT_AMPLIFIER_GO_PA_COMMAND,
+L0042: +                HystrixCommandConstants.ThreadPoolKeys.PRODUCT_AMPLIFIER_GO_THREADPOOL_KEY,
+L0043: +                productAmplifierGoConfig,
+L0044: +                defaultConfig
+L0045: +        );
+L0046: +    }
+L0047: +
+L0048:      @Bean(PRODUCT_AMPLIFIER_FALLBACK_COMMAND_SETTER_BEAN)
+L0049:      public HystrixCommand.Setter getPAFallbackCommandSetter() {
+L0050:          return SetterFactory.getSetter(
+
+### store-front-service/src/main/java/com/meesho/storefront/config/multitenancy/constants/classes/CommonConstantConfig.java (modified, +1/-0)
+@@ -156,6 +156,7 @@ public class CommonConstantConfig {
+L0156:      private PAMigration paMigration;
+L0157:      private GcpMigration gcpMigration;
+L0158:      private FAGolangMigration faMigration;
+L0159: +    private ProductAmplifyrGoConfig productAmplifyrGo;
+L0160:      private int samplingRateForPdpMigration;
+L0161:      private int samplingRateForRecentlyViewedSubstitutes;
+L0162:      private int samplingRateForClpMigration;
+
+### store-front-service/src/main/java/com/meesho/storefront/config/multitenancy/constants/classes/common/ProductAmplifyrGoConfig.java (added, +35/-0)
+@@ -0,0 +1,35 @@
+L0001: +package com.meesho.storefront.config.multitenancy.constants.classes.common;
+L0002: +
+L0003: +import lombok.AllArgsConstructor;
+L0004: +import lombok.Builder;
+L0005: +import lombok.Data;
+L0006: +import lombok.NoArgsConstructor;
+L0007: +
+L0008: +import java.util.List;
+L0009: +
+L0010: +@Data
+L0011: +@AllArgsConstructor
+L0012: +@NoArgsConstructor
+L0013: +@Builder
+L0014: +public class ProductAmplifyrGoConfig {
+L0015: +
+L0016: +    private List<String> whitelistedUserIds;
+L0017: +    private Migration migration;
+L0018: +    private Sampling sampling;
+L0019: +
+L0020: +    @Data
+L0021: +    @AllArgsConstructor
+L0022: +    @NoArgsConstructor
+L0023: +    @Builder
+L0024: +    public static class Migration {
+L0025: +        private int pdp;
+L0026: +    }
+L0027: +
+L0028: +    @Data
+L0029: +    @AllArgsConstructor
+L0030: +    @NoArgsConstructor
+L0031: +    @Builder
+L0032: +    public static class Sampling {
+L0033: +        private int pdp;
+L0034: +    }
+L0035: +}
+
+### store-front-service/src/main/java/com/meesho/storefront/data/constants/CommonConstants.java (modified, +1/-0)
+@@ -380,6 +380,7 @@ public static class ApplicationBeanNames {
+L0380:          public static final String PRODUCT_AGGREGATOR_EXECUTOR = "productAggregatorExecutor";
+L0381:          public static final String AFFILIATE_EXECUTOR = "affiliateExecutor";
+L0382:          public static final String WIDGET_AGGREGATOR_EXECUTOR = "widgetAggregatorExecutor";
+L0383: +        public static final String PA_GO_SAMPLING_EXECUTOR = "paGoSamplingExecutor";
+L0384:          public static final String FEATURE_CONFIG_PROVIDER = "multiTenantFeatureConfigProvider";
+L0385:          public static final String COUNTRY_CONSTANTS_PROVIDER = "multiTenantCountryConstantsProvider";
+L0386:          public static final String VERNAC_CONSTANTS_PROVIDER = "multiTenantVernacConstantsProvider";
+
+### store-front-service/src/main/java/com/meesho/storefront/data/constants/HystrixCommandConstants.java (modified, +5/-0)
+@@ -78,6 +78,7 @@ public static class UrlKeys {
+L0078:          public static final String LOYALTY_ENGINE_BASE_URL = "loyaltyEngineBaseUrl";
+L0079:          public static final String WATCHER_SERVICE_BASE_URL="watcherServiceBaseUrl";
+L0080:          public static final String PRODUCT_AMPLIFIER_BASE_URL ="productAmplifierBaseUrl";
+L0081: +        public static final String PRODUCT_AMPLIFIER_GO_BASE_URL = "productAmplifierGoBaseUrl";
+L0082:          public static final String PRODUCT_AMPLIFIER_CART_BASE_URL ="productAmplifierCartBaseUrl";
+L0083:          public static final String PRODUCT_AMPLIFIER_FALLBACK_BASE_URL = "productAmplifierFallbackBaseUrl";
+L0084:          public static final String DRS_BASE_URL = "drsBaseUrl";
+@@ -361,6 +362,7 @@ public static class SetterBeans {
+L0362:          public static final String FETCH_MEESHO_COIN_SETTER = "LOYALTY_ENGINE_FetchMeeshoCoinSetter";
+L0363:          public static final String CLP_INTERNAL_FILTER_DATA_SETTER = "MERCHANDISING_CLPInternalFilterInfoSetter";
+L0364:          public static final String PRODUCT_AMPLIFIER_COMMAND_SETTER_BEAN = "PRODUCT_AMPLIFIER_CommandSetterBean";
+L0365: +        public static final String PRODUCT_AMPLIFIER_GO_COMMAND_SETTER_BEAN = "PRODUCT_AMPLIFIER_GO_CommandSetterBean";
+L0366:          public static final String PRODUCT_AMPLIFIER_FALLBACK_COMMAND_SETTER_BEAN = "PRODUCT_AMPLIFIER_FALLBACK_CommandSetterBean";
+L0367:          public static final String FEED_ENTITY_CLP_INTERNAL_FILTER_DATA_SETTER = "FEED_ENTITY_CLPInternalFilterInfoSetter";
+L0368:          public static final String CATALOG_FEED_FOR_DYNAMIC_FILTERS_FEED_FROM_RXFA_SETTER = "RX_FEED_AGGREGATOR_CatalogFeedForDynamicFiltersFeedFromRxFASetter";
+@@ -938,6 +940,7 @@ public static class CompetitiveMarketplace {
+L0940:  
+L0941:          public static class ProductAmplifier {
+L0942:              public static final String PRODUCT_AMPLIFIER_PA_COMMAND = "PRODUCT_AMPLIFIER_ProductAggregatorCommand";
+L0943: +            public static final String PRODUCT_AMPLIFIER_GO_PA_COMMAND = "PRODUCT_AMPLIFIER_GO_ProductAggregatorCommand";
+L0944:              public static final String PRODUCT_AMPLIFIER_PA_CART_COMMAND = "PRODUCT_AMPLIFIER_ProductAggregatorCartCommand";
+L0945:              public static class Fallback {
+L0946:                  public static final String PRODUCT_AMPLIFIER_FALLBACK_COMMAND = "PRODUCT_AMPLIFIER_FALLBACK_ProductAggregatorCommand";
+@@ -1015,6 +1018,7 @@ public static class ThreadPoolKeys {
+L1018:          public static final String LOYALTY_ENGINE_THREADPOOL_KEY = "LoyaltyEngineThreadPool";
+L1019:          public static final String WATCHER_THREADPOOL_KEY = "WatcherServiceThreadPool";
+L1020:          public static final String PRODUCT_AMPLIFIER_THREADPOOL_KEY = "ProductAmplifierThreadPool";
+L1021: +        public static final String PRODUCT_AMPLIFIER_GO_THREADPOOL_KEY = "ProductAmplifierGoThreadPool";
+L1022:          public static final String PRODUCT_AMPLIFIER_FALLBACK_THREADPOOL_KEY = "ProductAmplifierFallbackThreadPool";
+L1023:          public static final String RX_FA_DYNAMIC_FILTERS_FEED_THREADPOOL_KEY = "RxFADynamicFiltersFeedThreadPool";
+L1024:          public static final String SESSION_MANAGER_THREADPOOL_KEY = "SessionManagerThreadPool";
+@@ -1081,6 +1085,7 @@ public static class ServiceHttpPoolBeanNames {
+L1085:          public static final String LOCATION_HTTP_CONNECTION_POOL = "LocationHTTPConnectionPool";
+L1086:          public static final String PRODUCT_AGGREGATOR_HTTP_CONNECTION_POOL = "ProductAggregatorHTTPConnectionPool";
+L1087:          public static final String PRODUCT_APLIFIER_HTTP_CONNECTION_POOL = "ZeusVerseHTTPConnectionPool";
+L1088: +        public static final String PRODUCT_AMPLIFIER_GO_HTTP_CONNECTION_POOL = "ZeusVerseGoHTTPConnectionPool";
+L1089:          public static final String PRODUCT_AMPLIFIER_CART_HTTP_CONNECTION_POOL = "ZeusVerseCartHTTPConnectionPool";
+L1090:  
+L1091:          public static final String WATCHER_HTTP_CONNECTION_POOL="WatcherHTTPConnectionPool";
+
+### store-front-service/src/main/java/com/meesho/storefront/service/handler/v3/impl/ProductDetailHandlerV3.java (modified, +22/-3)
+@@ -30,6 +30,7 @@
+L0030:  import com.meesho.storefront.clients.dtos.views.inventory.InventoryDetails;
+L0031:  import com.meesho.storefront.clients.dtos.views.supplier.SupplierViewV2;
+L0032:  import com.meesho.storefront.config.multitenancy.constants.classes.CommonConstantConfig;
+L0033: +import com.meesho.storefront.config.multitenancy.constants.classes.common.ProductAmplifyrGoConfig;
+L0034:  import com.meesho.storefront.config.multitenancy.features.FeatureConfig;
+L0035:  import com.meesho.storefront.data.constants.CommonConstants;
+L0036:  import com.meesho.storefront.data.domainModels.enums.ExperimentTypes;
+@@ -554,15 +555,15 @@ public ProductAggregationDependencyData getProductAggregationResponse(ProductAgg
+L0555:              abExperimentByTypeAndRefIdRequest = ABServiceAdapter.getABExperimentByTypeAndRefIdRequestForPDP(productAggregationReq.getProductId());
+L0556:          }
+L0557:  
+L0558: +        CommandRequest.RequestMeta requestMeta = buildProductAmplifyrGoRequestMeta();
+L0559: +
+L0560:          ProductAggregationDependencyData productAggregationDependencyData =
+L0561:                  productAggregatorDownStreamCallManager.getDataFromProductAmplifier(
+L0562:                          CommandRequest.builder()
+L0563:                                  .productAmplifierRequest(paRequest)
+L0564:                                  .abExperimentRequest(abExperimentRequest)
+L0565:                                  .abExperimentByTypeAndRefIdRequest(abExperimentByTypeAndRefIdRequest)
+L----: -                                .requestMeta(CommandRequest.RequestMeta.builder()
+L----: -                                        .requestContextForPA(PDP_SOURCE)
+L----: -                                        .build())
+L0566: +                                .requestMeta(requestMeta)
+L0567:                                  .build()
+L0568:                  );
+L0569:          
+@@ -577,6 +578,24 @@ public ProductAggregationDependencyData getProductAggregationResponse(ProductAgg
+L0578:          return productAggregationDependencyData;
+L0579:      }
+L0580:  
+L0581: +    private CommandRequest.RequestMeta buildProductAmplifyrGoRequestMeta() {
+L0582: +        Long userId = NullUtils.getOrDefault(ThreadLocalUtil.getUserMeta(), m -> m.getUserId(), null);
+L0583: +        String anonymousUserId = NullUtils.getOrDefault(ThreadLocalUtil.getUserMeta(), m -> m.getAnonymousUserId(), null);
+L0584: +
+L0585: +        ProductAmplifyrGoConfig paGoConfig = commonConstantConfig.getProductAmplifyrGo();
+L0586: +        boolean divertToGo = paGoConfig != null && (
+L0587: +                TrafficPolice.shouldDivertByUserHash(paGoConfig.getMigration() != null ? paGoConfig.getMigration().getPdp() : -1, userId, anonymousUserId)
+L0588: +                || TrafficPolice.isUserWhiteListed(userId, paGoConfig.getWhitelistedUserIds()));
+L0589: +        boolean isSampling = !divertToGo && paGoConfig != null && paGoConfig.getSampling() != null
+L0590: +                && TrafficPolice.shouldDivertByUserHash(paGoConfig.getSampling().getPdp(), userId, anonymousUserId);
+L0591: +
+L0592: +        return CommandRequest.RequestMeta.builder()
+L0593: +                .requestContextForPA(PDP_SOURCE)
+L0594: +                .divertToGoProductAmplifier(divertToGo)
+L0595: +                .samplingEnabledForProductAmplifier(isSampling)
+L0596: +                .build();
+L0597: +    }
+L0598: +
+L0599:      private ProductAggregationRequest constructPARequest(ProductAggregationReq productAggregationReq) {
+L0600:          boolean fetchVariationsSizeForStatic = TrafficPolice.shouldDivert(commonConstantConfig.getPercentagePdpSizeChart());
+L0601:          boolean fetchVariationNameFromTaxonomy = BooleanUtils.isTrue(productAggregationReq.getFetchVariationNameFromTaxonomy());
+
+### store-front-service/src/main/java/com/meesho/storefront/service/utils/TrafficPolice.java (modified, +9/-0)
+@@ -36,6 +36,15 @@ public static boolean shouldDivertWithUserContext(int percentage, Long userId, S
+L0036:          return shouldDivert(percentage);
+L0037:      }
+L0038:  
+L0039: +    public static boolean shouldDivertByUserHash(int percentage, Long userId, String anonymousUserId) {
+L0040: +        if (Objects.nonNull(userId)) {
+L0041: +            return userId % 100 < percentage;
+L0042: +        } else if (!StringUtils.isEmpty(anonymousUserId)) {
+L0043: +            return (Math.abs(anonymousUserId.hashCode())) % 100 < percentage;
+L0044: +        }
+L0045: +        return shouldDivert(percentage);
+L0046: +    }
+L0047: +
+L0048:      public static boolean shouldDivertForPdp(int percentage, Long userId, String anonymousUserId) {
+L0049:          if(Objects.nonNull(userId)) {
+L0050:              return userId % 10000 < percentage;

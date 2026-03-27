@@ -1,0 +1,7 @@
+## Team Anti-Patterns
+- Avoid using `Optional` as an inline null-check replacement (e.g., `Optional.ofNullable(...).orElse(...)` inside method bodies) because `Optional` is intended to wrap return values that may be absent, not to substitute ternary null guards within logic.
+- Avoid wildcard imports (`import com.meesho.aggregator.viewadapters.*`) in production classes like `DetailsResponseAdapter` and `CompMarketPlaceHandler`; IntelliJ's wildcard threshold setting should be disabled to prevent this from recurring automatically.
+- Avoid using `0` as the disabled/off value for percentage-based rollout configs; use `-1` because `userId % hash == 0` evaluates as truthy and can accidentally enable a rollout for a subset of users.
+- Avoid placing experiment-enabling guard checks (e.g., `enhancedSmartphonePLPEnabled`) at the end of a computation block in `CatalogFeedPopulationHandlerV3`; always gate on the flag first to skip unnecessary computation.
+- Avoid instantiating gRPC clients (e.g., `CatalogFeedForTextSearchFromFeedProcessorGrpcCommand`) lazily at runtime; create them as Spring beans at startup so misconfigured clients fail fast and don't surface in production.
+- Avoid duplicating config keys in `application-prd.yml` when the same key is already managed in the dynamic config layer (as flagged in `ProductDetailControllerV3` and pamp-go diversion PRs).

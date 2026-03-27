@@ -1,0 +1,6 @@
+## Recurring Review Flags
+- When adding new dynamic config keys (e.g., `percentageMigrationRvFeedContext`, `mall_tag_disabled`, `threshold`), always register them in `application-schema` as well. (Observed in 3 PRs)
+- When introducing inline string literals or magic values (e.g., `"RAM"`, `"Storage"`, AB experiment keys in `PLPEnhancedConfigHandler`), always extract them to a shared constants file rather than leaving them in the handler or adapter. (Observed in 2 PRs)
+- When a view adapter class (e.g., `PACatalogFeedViewAdapter`, `PAWishlistViewAdapter`) grows beyond a single responsibility, always extract new logic into a purpose-specific adapter class (following the `MediaAdapter` pattern) rather than adding methods inline. (Observed in 2 PRs)
+- When writing new handler logic, always generate corresponding unit tests; for existing parameterizable test methods (e.g., in `EnhancementDataAdapterTest`), prefer `@ParameterizedTest` over duplicated test methods. (Observed in 2 PRs)
+- When naming variables and methods, always use descriptive names (e.g., avoid single-letter variables like `c`, `e`, `n`; prefer `performCheapSwapOnVariations` over vague names); add doc comments explaining non-obvious intent. (Observed in 2 PRs)

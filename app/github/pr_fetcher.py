@@ -7,6 +7,7 @@ import httpx
 import pathspec
 
 from app.github.app_auth import get_installation_token
+from app.github.method_context import MAX_TOTAL_METHOD_LINES, extract_method_contexts
 from app.models.review import FileDiff, ReviewContext
 from app.models.webhook import WebhookPayload
 
@@ -163,12 +164,21 @@ async def fetch_review_context(payload: WebhookPayload) -> ReviewContext:
             additions=f["additions"],
             deletions=f["deletions"],
             patch=patch,
+            blob_sha=f.get("sha"),
         ))
 
+    primary_language = _infer_language(diff_files)
     logger.info(
-        "PR #%d — %d files total, %d reviewable after filtering",
-        pr_number, all_count, len(diff_files),
+        "PR #%d — %d files total, %d reviewable after filtering (lang: %s)",
+        pr_number, all_count, len(diff_files), primary_language,
     )
+
+    # Fetch enclosing method context for each changed file in parallel
+    head_sha = payload.pull_request.head.sha or ""
+    if head_sha:
+        await _attach_method_contexts(diff_files, repo, head_sha, primary_language, token)
+    else:
+        logger.warning("PR #%d — no head SHA in payload, skipping method context", pr_number)
 
     return ReviewContext(
         run_id=str(uuid.uuid4()),
@@ -176,9 +186,49 @@ async def fetch_review_context(payload: WebhookPayload) -> ReviewContext:
         pr_number=pr_number,
         pr_title=payload.pull_request.title,
         pr_description=payload.pull_request.body or "",
-        primary_language=_infer_language(diff_files),
+        primary_language=primary_language,
         diff_files=diff_files,
     )
+
+
+async def _attach_method_contexts(
+    diff_files: list[FileDiff],
+    repo: str,
+    head_sha: str,
+    lang: str,
+    token: str,
+) -> None:
+    """
+    Fetch enclosing method source for every changed file in parallel.
+    Respects MAX_TOTAL_METHOD_LINES — stops attaching once the budget is used.
+    Failures are logged and ignored so a blob fetch error never aborts the review.
+    """
+    import asyncio
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(
+            *[extract_method_contexts(client, repo, head_sha, headers, f, lang) for f in diff_files],
+            return_exceptions=True,
+        )
+
+    total_lines = 0
+    for f, result in zip(diff_files, results):
+        if isinstance(result, Exception):
+            logger.warning("Method context extraction failed for %s: %s", f.filename, result)
+            continue
+        for ctx in result:
+            ctx_lines = ctx.source.count("\n") + 1
+            if total_lines + ctx_lines > MAX_TOTAL_METHOD_LINES:
+                logger.info("Method context budget exhausted — skipping remaining files")
+                return
+            f.method_contexts.append(ctx)
+            total_lines += ctx_lines
 
 
 async def _fetch_in_parallel(

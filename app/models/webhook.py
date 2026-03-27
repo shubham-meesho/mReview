@@ -7,6 +7,7 @@ class Repository(BaseModel):
 
 class PullRequestRef(BaseModel):
     ref: str
+    sha: str | None = None
 
 
 class PullRequest(BaseModel):
